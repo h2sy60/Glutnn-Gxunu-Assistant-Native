@@ -224,3 +224,63 @@ func currentWeek(for school: SchoolConfig, on date: Date = Date()) -> Int {
     if week > 20 { week = 20 }
     return week
 }
+
+// MARK: - 成绩模型（两校共用）
+
+/// 一门课的成绩。
+struct CourseScore: Identifiable {
+    let id = UUID()
+    let courseCode: String
+    let courseName: String
+    let teacher: String
+    /// 数字分（等级分按 优95/良85/中75/及格65/合格65/不及格40 换算）。
+    let score: Double
+    /// 原始成绩文本（数字或等级，如 "88" / "优"）。
+    let rawScore: String
+    let gradePoint: Double
+    let credit: Double
+    let courseCategory: String
+}
+
+/// 等级分换算成数字（与 Flutter 版 levelToNumber 一致）。
+/// 注意先换“不及格/不合格”（它们包含“及格”二字，后换会被误伤）。
+func levelToNumber(_ value: String) -> String {
+    value
+        .replacingOccurrences(of: "不及格", with: "40")
+        .replacingOccurrences(of: "不合格", with: "40")
+        .replacingOccurrences(of: "优", with: "95")
+        .replacingOccurrences(of: "良", with: "85")
+        .replacingOccurrences(of: "中", with: "75")
+        .replacingOccurrences(of: "及格", with: "65")
+        .replacingOccurrences(of: "合格", with: "65")
+}
+
+/// 计入绩点的课程类别（与 Flutter 版一致）。
+let gpaCourseCategories = ["实践教学环节", "专业核心课", "专业基础课", "公共必修课"]
+
+/// 不计入绩点的课程号（与 Flutter 版 excludedCourseCodes 一致，共 67 个）。
+let excludedCourseCodes: Set<String> = ["B83A000111", "B83A000112", "B83A000113", "B83A000114", "B83A000115", "B83A000211", "B83A000212", "B83A000213", "B84A000111", "B84A000112", "B84A000113", "B85A000111", "B85A000112", "B72A000411", "B72A000412", "B72A000413", "B72A000414", "B72A000415", "B72A000416", "B72A000417", "B72A000418", "B72A000611", "B82A000111", "B82A000112", "B82A000113", "B82A000114", "B87A000210", "B87A000211", "B87A000212", "B87A000213", "B87A000214", "B87A000215", "B87A000216", "B87A000217", "B87A000218", "B87A000219", "G83A000111", "G83A000112", "G83A000113", "G83A000114", "G83A000115", "G83A000211", "G83A000212", "G83A000213", "G84A000111", "G84A000112", "B85A000111", "B85A000112", "G85A000111", "G85A000112", "G72A000311", "G72A000312", "G72A000313", "G72A000314", "G72A000315", "G72A000316", "G72A000321", "G82A000111", "G82A000112", "G82A000113", "G82A000114", "G87A000211", "G87A000212", "G87A000213", "G87A000214", "G87A000215", "G87A000216"]
+
+/// 平均绩点：只算 gpaCourseCategories 类别、且不在排除名单里的课。
+/// 慕课（课程名含“慕课”且无老师）不计入。
+func gradePointAverage(_ scores: [CourseScore]) -> Double {
+    var totalGP = 0.0
+    var totalCredit = 0.0
+    for s in scores {
+        if s.courseName.contains("慕课") && s.teacher.isEmpty { continue }
+        if gpaCourseCategories.contains(s.courseCategory) && !excludedCourseCodes.contains(s.courseCode) {
+            totalGP += s.gradePoint * s.credit
+            totalCredit += s.credit
+        }
+    }
+    guard totalCredit > 0 else { return 0 }
+    return (totalGP / totalCredit * 100).rounded() / 100
+}
+
+/// 平均分：慕课（课程名含“慕课”且无老师）不计入。
+func averageScore(_ scores: [CourseScore]) -> Double {
+    let counted = scores.filter { !($0.courseName.contains("慕课") && $0.teacher.isEmpty) }
+    guard !counted.isEmpty else { return 0 }
+    let total = counted.reduce(0.0) { $0 + $1.score }
+    return (total / Double(counted.count) * 100).rounded() / 100
+}
