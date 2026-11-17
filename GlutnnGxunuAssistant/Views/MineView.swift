@@ -87,10 +87,14 @@ struct MineView: View {
 struct ScoreView: View {
     @Environment(AppState.self) private var appState
 
-    /// 成绩数组存在 @State 里（普通值）。直接用 appState.scores 时，
-    /// List/ForEach 在此 @Environment + @Observable 上下文里总被解析成 Binding，
-    /// 所以用 @State 快照，.task 与 .onChange 再从 appState 同步。
+    /// 成绩数组存在 @State 里（普通值），.task 与 .onChange 再从 appState 同步。
     @State private var scores: [CourseScore] = []
+
+    /// 临时：把成绩拼成纯文本展示。List/ForEach 在此页总被解析成 Binding
+    ///（build 13–19 六次全挂），先拿掉列表，列表界面稍后单独修。
+    private var scoresText: String {
+        scores.map { "\($0.courseName)  \($0.rawScore)  \($0.teacher.isEmpty ? "—" : $0.teacher)" }.joined(separator: "\n")
+    }
 
     var body: some View {
         ZStack {
@@ -150,28 +154,12 @@ struct ScoreView: View {
                     .padding(.horizontal)
                     .padding(.top, 8)
 
-                    List(scores, id: \.id) { score in
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack {
-                                Text(score.courseName)
-                                    .font(.headline)
-                                Spacer()
-                                Text(score.rawScore)
-                                    .font(.headline)
-                                    .foregroundStyle(score.score >= 60 ? .primary : .red)
-                            }
-                            Text("\(score.teacher.isEmpty ? "—" : score.teacher) · \(score.courseCategory.isEmpty ? "—" : score.courseCategory)")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                            Text("学分 \(score.credit, specifier: "%.1f") · 绩点 \(score.gradePoint, specifier: "%.1f")")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.vertical, 2)
-                    }
-                    .listStyle(.insetGrouped)
-                    .refreshable {
-                        await appState.refreshScores()
+                    // 临时：成绩以纯文本展示（List/ForEach 在此页总被解析成 Binding，先拿掉）。
+                    ScrollView {
+                        Text(scoresText)
+                            .font(.system(size: 15))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding()
                     }
                 }
             }
