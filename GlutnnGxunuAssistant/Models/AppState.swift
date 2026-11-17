@@ -32,6 +32,7 @@ enum ScheduleError: Error, LocalizedError {
 // 学号/密码只存在内存里（供会话过期自动重登），不写磁盘、不发给
 // 教务以外的任何地方。设置页/持久化以后再做。
 
+@MainActor
 @Observable
 final class AppState {
     /// 当前学校，默认桂工。
