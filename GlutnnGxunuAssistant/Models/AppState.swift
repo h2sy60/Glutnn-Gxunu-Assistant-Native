@@ -84,6 +84,11 @@ final class AppState {
     var scheduleLoading = false
     var scheduleError: String?
 
+    /// 成绩。
+    var scores: [CourseScore] = []
+    var scoresLoading = false
+    var scoresError: String?
+
     /// 登录状态。
     var loginLoading = false
     var loginError: String?
@@ -120,6 +125,8 @@ final class AppState {
         password = ""
         studentName = ""
         courses = []
+        scores = []
+        scoresError = nil
         scheduleError = nil
         loginError = nil
         captchaImageData = nil
@@ -190,6 +197,8 @@ final class AppState {
         password = ""
         studentName = ""
         courses = []
+        scores = []
+        scoresError = nil
         scheduleError = nil
         loginError = nil
         captchaImageData = nil
@@ -255,6 +264,59 @@ final class AppState {
             }
         } catch {
             scheduleError = (error as? LocalizedError)?.errorDescription ?? "拉取课表失败"
+        }
+    }
+
+    // MARK: - 成绩
+
+    /// 拉成绩（全部学年学期）。会话过期时自动重登一次再试。
+    func refreshScores() async {
+        guard isLoggedIn else { return }
+        scoresLoading = true
+        scoresError = nil
+        defer { scoresLoading = false }
+
+        do {
+            let list: [CourseScore]
+            if school.id == .gut {
+                list = try await GUTService.fetchScores()
+            } else {
+                list = try await GXVNUService.fetchScores(year: year)
+            }
+            scores = list
+            AppLogger.shared.log("scores \(school.id) ok, \(list.count) items")
+            if list.isEmpty { scoresError = "暂无成绩" }
+        } catch let error as ScheduleError {
+            if case .sessionExpired = error {
+                AppLogger.shared.log("scores \(school.id) session expired, relogin once")
+                let outcome: LoginOutcome
+                if school.id == .gut {
+                    outcome = await GUTService.login(studentId: studentId, password: password, captcha: "")
+                } else {
+                    outcome = await GXVNUService.login(studentId: studentId, password: password, captcha: "")
+                }
+                if case .success = outcome {
+                    do {
+                        let list: [CourseScore]
+                        if school.id == .gut {
+                            list = try await GUTService.fetchScores()
+                        } else {
+                            list = try await GXVNUService.fetchScores(year: year)
+                        }
+                        scores = list
+                        if list.isEmpty { scoresError = "暂无成绩" }
+                    } catch {
+                        scoresError = (error as? LocalizedError)?.errorDescription ?? "拉取成绩失败"
+                    }
+                } else {
+                    isLoggedIn = false
+                    scoresError = "登录已过期，请重新登录"
+                }
+            } else {
+                scoresError = error.errorDescription
+            }
+        } catch {
+            scoresError = (error as? LocalizedError)?.errorDescription ?? "拉取成绩失败"
         }
     }
 
