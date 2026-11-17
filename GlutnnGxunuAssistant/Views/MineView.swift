@@ -87,7 +87,8 @@ struct MineView: View {
 struct ScoreView: View {
     @Environment(AppState.self) private var appState
 
-    /// 把成绩数组取成普通值，避免 ForEach(scores) 被解析成 Binding 集合。
+    /// 成绩数组取成普通值；行列表用 List(scores, id:)（不用 ForEach，
+    /// ForEach 在此 @Environment + @Observable 上下文里总被解析成 Binding）。
     private var scores: [CourseScore] { appState.scores }
 
     var body: some View {
@@ -119,33 +120,36 @@ struct ScoreView: View {
                         .foregroundStyle(.secondary)
                 }
             } else {
-                List {
-                    Section {
-                        HStack(spacing: 24) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("平均绩点")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Text(String(format: "%.2f", gradePointAverage(scores)))
-                                    .font(.title3)
-                                    .fontWeight(.bold)
-                            }
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("平均分")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Text(String(format: "%.2f", averageScore(scores)))
-                                    .font(.title3)
-                                    .fontWeight(.bold)
-                            }
-                            Spacer()
-                            Text("\(scores.count) 门课")
+                VStack(spacing: 0) {
+                    HStack(spacing: 24) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("平均绩点")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                            Text(String(format: "%.2f", gradePointAverage(scores)))
+                                .font(.title3)
+                                .fontWeight(.bold)
                         }
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("平均分")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(String(format: "%.2f", averageScore(scores)))
+                                .font(.title3)
+                                .fontWeight(.bold)
+                        }
+                        Spacer()
+                        Text("\(scores.count) 门课")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
+                    .padding()
+                    .background(Color(.secondarySystemGroupedBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .padding(.horizontal)
+                    .padding(.top, 8)
 
-                    ForEach(scores, id: \.id) { score in
+                    List(scores, id: \.id) { score in
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
                                 Text(score.courseName)
@@ -164,10 +168,10 @@ struct ScoreView: View {
                         }
                         .padding(.vertical, 2)
                     }
-                }
-                .listStyle(.insetGrouped)
-                .refreshable {
-                    await appState.refreshScores()
+                    .listStyle(.insetGrouped)
+                    .refreshable {
+                        await appState.refreshScores()
+                    }
                 }
             }
         }
