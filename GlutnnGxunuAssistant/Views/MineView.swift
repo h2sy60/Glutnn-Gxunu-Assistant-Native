@@ -145,7 +145,7 @@ struct ScoreView: View {
                         }
                     }
 
-                    ForEach(scores.indices, id: \.self) { index in
+                    ForEach(0..<scores.count, id: \.self) { index in
                         let score = scores[index]
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
