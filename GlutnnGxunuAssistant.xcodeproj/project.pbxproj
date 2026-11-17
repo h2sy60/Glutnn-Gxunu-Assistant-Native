@@ -13,6 +13,13 @@
 		8DD649F9EB3F4D6FA1134312 /* ScheduleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8FDAE61C4DC4040884886DA /* ScheduleView.swift */; };
 		C34E814A0D4743159E478661 /* MineView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D24A4D1D6CD4BA2B27A38C5 /* MineView.swift */; };
 		8A8E7C688361494696E4FE44 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 9A63557DB6EB43D891741A03 /* Assets.xcassets */; };
+		8D8856B453BB4000AA9F5C1F /* School.swift in Sources */ = {isa = PBXBuildFile; fileRef = 668A4E4B3B0C4EBE8A579E8F /* School.swift */; };
+		78441925DBCA4FB188077F87 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBBC903F999F494497FD957F /* AppState.swift */; };
+		701E841695FA4F2B9F219364 /* NetworkClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1296E3B7134E45C6AD55C90E /* NetworkClient.swift */; };
+		E4967F0A876A4BFD90D318ED /* Crypto.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2FF13B65E50340E6AF85D27E /* Crypto.swift */; };
+		3CF416C1B9B84969B44E0010 /* GUTService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 680BFD9B523F48B0BDCA76E2 /* GUTService.swift */; };
+		79C6EAB0177543319B662717 /* GXVNUService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39EBE41EA84F45D5870B2F82 /* GXVNUService.swift */; };
+		FB693A1BF1664DA0A902CA1F /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 131B9BC63F584E9999383939 /* LoginView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -23,6 +30,13 @@
 		0D24A4D1D6CD4BA2B27A38C5 /* MineView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MineView.swift; sourceTree = "<group>"; };
 		9A63557DB6EB43D891741A03 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		F0CA88B40B044455966CC6E1 /* GlutnnGxunuAssistant.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = GlutnnGxunuAssistant.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		668A4E4B3B0C4EBE8A579E8F /* School.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = School.swift; sourceTree = "<group>"; };
+		FBBC903F999F494497FD957F /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
+		1296E3B7134E45C6AD55C90E /* NetworkClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkClient.swift; sourceTree = "<group>"; };
+		2FF13B65E50340E6AF85D27E /* Crypto.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Crypto.swift; sourceTree = "<group>"; };
+		680BFD9B523F48B0BDCA76E2 /* GUTService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GUTService.swift; sourceTree = "<group>"; };
+		39EBE41EA84F45D5870B2F82 /* GXVNUService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GXVNUService.swift; sourceTree = "<group>"; };
+		131B9BC63F584E9999383939 /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -39,16 +53,29 @@
 			EBA3F6E1959E4BD8BE79EFE9 /* GlutnnGxunuAssistantApp.swift */,
 			C92B4AC387394940AA49D911 /* ContentView.swift */,
 			7FBD922BAB6F44CD92BC8981 /* Views */,
+			1D153D6A78C547E49C44E08E /* Models */,
+			5357E37D74674BAB99DEE8DF /* Networking */,
 			9A63557DB6EB43D891741A03 /* Assets.xcassets */,
 		); path = GlutnnGxunuAssistant; sourceTree = "<group>"; };
 		7FBD922BAB6F44CD92BC8981 /* Views */ = {isa = PBXGroup; children = (
 			DC0FB8712F7F40C6AAF13839 /* HomeView.swift */,
 			A8FDAE61C4DC4040884886DA /* ScheduleView.swift */,
 			0D24A4D1D6CD4BA2B27A38C5 /* MineView.swift */,
+			131B9BC63F584E9999383939 /* LoginView.swift */,
 		); path = Views; sourceTree = "<group>"; };
 		3CF6DB72923C44F3B841C0DB /* Products */ = {isa = PBXGroup; children = (
 			F0CA88B40B044455966CC6E1 /* GlutnnGxunuAssistant.app */,
 		); name = Products; sourceTree = "<group>"; };
+		1D153D6A78C547E49C44E08E /* Models */ = {isa = PBXGroup; children = (
+			668A4E4B3B0C4EBE8A579E8F /* School.swift */,
+			FBBC903F999F494497FD957F /* AppState.swift */,
+		); path = Models; sourceTree = "<group>"; };
+		5357E37D74674BAB99DEE8DF /* Networking */ = {isa = PBXGroup; children = (
+			1296E3B7134E45C6AD55C90E /* NetworkClient.swift */,
+			2FF13B65E50340E6AF85D27E /* Crypto.swift */,
+			680BFD9B523F48B0BDCA76E2 /* GUTService.swift */,
+			39EBE41EA84F45D5870B2F82 /* GXVNUService.swift */,
+		); path = Networking; sourceTree = "<group>"; };
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -80,6 +107,13 @@
 			4437B9C773174503B23E0CD1 /* HomeView.swift in Sources */,
 			8DD649F9EB3F4D6FA1134312 /* ScheduleView.swift in Sources */,
 			C34E814A0D4743159E478661 /* MineView.swift in Sources */,
+			8D8856B453BB4000AA9F5C1F /* School.swift in Sources */,
+			78441925DBCA4FB188077F87 /* AppState.swift in Sources */,
+			701E841695FA4F2B9F219364 /* NetworkClient.swift in Sources */,
+			E4967F0A876A4BFD90D318ED /* Crypto.swift in Sources */,
+			3CF416C1B9B84969B44E0010 /* GUTService.swift in Sources */,
+			79C6EAB0177543319B662717 /* GXVNUService.swift in Sources */,
+			FB693A1BF1664DA0A902CA1F /* LoginView.swift in Sources */,
 		); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
 
