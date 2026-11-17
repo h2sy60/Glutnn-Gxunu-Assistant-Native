@@ -5,8 +5,9 @@ import SwiftUI
 //
 // 原生版之前没有日志功能，出了问题只能靠猜。关键步骤都记下来，
 // 在「我的」页点「导出日志」可以分享出去。只记在内存里，不写磁盘，
+// 可变状态全由 NSLock 保护，所以标 @unchecked Sendable（编译器无法自行证明）。
 // 不含密码（密码只传给教务服务器，绝不记日志）。
-final class AppLogger {
+final class AppLogger: @unchecked Sendable {
     static let shared = AppLogger()
     private let lock = NSLock()
     private var lines: [String] = []
