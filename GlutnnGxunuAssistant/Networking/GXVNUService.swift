@@ -234,12 +234,17 @@ enum GXVNUService {
                 // （被 302 到菜单页）= 已登录成功；回的还是登录页 = 真失败。
                 let probeHtml = await getLoginPage()
                 if !isLoginPage(probeHtml) {
+                    AppLogger.shared.log("GXVNU login success (302 probe)")
                     return .success
                 }
                 // 真失败：这次 POST 的会话已脏，清掉。
                 clearSession()
                 let freshHtml = await getLoginPage()
-                if captchaRequired(html: freshHtml) { return .captchaRequired }
+                if captchaRequired(html: freshHtml) {
+                    AppLogger.shared.log("GXVNU login captchaRequired (302)")
+                    return .captchaRequired
+                }
+                AppLogger.shared.log("GXVNU login failure: 学号或密码错误")
                 return .failure("学号或密码错误")
             }
             return .success
@@ -249,9 +254,11 @@ enum GXVNUService {
             let tips = tipsText(bodyText)
             if tips.contains("验证码") || bodyText.contains("name=\"yzm\"") {
                 clearSession()
+                AppLogger.shared.log("GXVNU login captchaRequired (200)")
                 return .captchaRequired
             }
             clearSession()
+            AppLogger.shared.log("GXVNU login failure (200): \(tips)")
             return .failure(tips.isEmpty ? "学号或密码错误" : tips)
         }
         clearSession()
@@ -319,6 +326,7 @@ enum GXVNUService {
                         lastStudentName = xm.trimmingCharacters(in: .whitespaces)
                     }
                 }
+                AppLogger.shared.log("GXVNU schedule: kbList=\(kbList.count)")
                 return parseKbList(kbList)
             } catch let error as ScheduleError {
                 throw error
