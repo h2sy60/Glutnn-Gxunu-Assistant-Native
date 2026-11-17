@@ -1,6 +1,36 @@
 import Foundation
 import SwiftUI
 
+// MARK: - 应用内日志（诊断用）
+//
+// 原生版之前没有日志功能，出了问题只能靠猜。关键步骤都记下来，
+// 在「我的」页点「导出日志」可以分享出去。只记在内存里，不写磁盘，
+// 不含密码（密码只传给教务服务器，绝不记日志）。
+final class AppLogger {
+    static let shared = AppLogger()
+    private let lock = NSLock()
+    private var lines: [String] = []
+    private let maxLines = 2000
+    private let formatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MM-dd HH:mm:ss"
+        return f
+    }()
+
+    func log(_ message: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        lines.append("[\(formatter.string(from: Date()))] \(message)")
+        if lines.count > maxLines { lines.removeFirst(lines.count - maxLines) }
+    }
+
+    func exportText() -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        return lines.joined(separator: "\n")
+    }
+}
+
 // MARK: - 登录 / 课表结果
 
 enum LoginOutcome {
@@ -132,12 +162,14 @@ final class AppState {
 
         switch outcome {
         case .success:
+            AppLogger.shared.log("login \(school.id) success")
             isLoggedIn = true
             loginError = nil
             showCaptcha = false
             captchaText = ""
             await refreshSchedule()
         case .failure(let message):
+            AppLogger.shared.log("login \(school.id) failure: \(message)")
             isLoggedIn = false
             loginError = message
             // 失败后验证码作废，重新取一张（桂工每次登录都要新图）。
@@ -145,6 +177,7 @@ final class AppState {
                 await fetchCaptcha()
             }
         case .captchaRequired:
+            AppLogger.shared.log("login \(school.id) captchaRequired")
             loginError = "请输入验证码"
             await fetchCaptcha()
         }
@@ -185,8 +218,10 @@ final class AppState {
                 }
             }
             courses = list
+            AppLogger.shared.log("schedule \(school.id) ok, \(list.count) courses")
             if list.isEmpty { scheduleError = "本周没有课程" }
         } catch let error as ScheduleError {
+            AppLogger.shared.log("schedule \(school.id) error: \(error.errorDescription ?? "未知")")
             if case .sessionExpired = error {
                 // 会话过期：自动重登一次，再拉一次课表。
                 let outcome: LoginOutcome
