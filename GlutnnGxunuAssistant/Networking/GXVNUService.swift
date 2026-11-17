@@ -339,6 +339,90 @@ enum GXVNUService {
         throw lastError
     }
 
+    // MARK: - 成绩
+
+    /// 查成绩（全部：近 5 学年 × 秋/春，逐页拉完合并，与 Flutter 版一致）。
+    /// 单条字段名未验证（0 条记录），用多键容错取。
+    static func fetchScores(year: Int) async throws -> [CourseScore] {
+        guard await isLoggedIn() else { throw ScheduleError.sessionExpired }
+        var all: [CourseScore] = []
+        for y in (year - 4...year).reversed() {
+            for semester in ["秋", "春"] {
+                var page = 1
+                var totalPage = 1
+                repeat {
+                    let (items, tp) = try await fetchScoresPage(year: y, semester: semester, page: page)
+                    all.append(contentsOf: items)
+                    totalPage = tp
+                    page += 1
+                } while page <= totalPage
+            }
+        }
+        AppLogger.shared.log("GXVNU scores: total \(all.count) items")
+        return all
+    }
+
+    /// 单页成绩。返回（本页成绩，总页数）。
+    private static func fetchScoresPage(year: Int, semester: String, page: Int) async throws -> ([CourseScore], Int) {
+        guard let gnmkdm = school.gnmkdm["成绩"],
+              let url = school.url("/cjcx/cjcx_cxDgXscj.html", query: [
+                "doType": "query",
+                "gnmkdm": gnmkdm,
+                "xnm": yearString(year),
+                "xqm": semesterCode(semester),
+                "queryModel.showCount": "15",
+                "queryModel.currentPage": "\(page)",
+                "_search": "false",
+                "nd": "\(Date().millisecondsSinceEpoch)",
+              ]) else {
+            throw ScheduleError.network("地址无效")
+        }
+        let data: Data
+        do {
+            (data, _) = try await client.get(url, headers: browserHeaders)
+        } catch let error as NetworkError {
+            throw ScheduleError.network(error.errorDescription ?? "网络错误")
+        }
+        let body = String(data: data, encoding: .utf8) ?? ""
+        if isLoginPage(body) { throw ScheduleError.sessionExpired }
+        guard let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw ScheduleError.parseError
+        }
+        let items = decoded["items"] as? [[String: Any]] ?? []
+        let totalPage = (decoded["totalPage"] as? NSNumber)?.intValue ?? 1
+        if page == 1 {
+            AppLogger.shared.log("GXVNU scores \(year) \(semester): items=\(items.count) totalPage=\(totalPage)")
+            if let first = items.first {
+                AppLogger.shared.log("GXVNU scores first item keys: \(first.keys.sorted().joined(separator: ","))")
+            }
+        }
+        return (items.compactMap { scoreFromItem($0) }, totalPage)
+    }
+
+    /// 单条成绩（字段名未验证，多键容错）。
+    private static func scoreFromItem(_ item: [String: Any]) -> CourseScore? {
+        func pick(_ keys: [String]) -> String {
+            for k in keys {
+                if let s = item[k] as? String, !s.isEmpty { return s }
+                if let n = item[k] as? NSNumber { return n.stringValue }
+            }
+            return ""
+        }
+        let courseName = pick(["kcmc"])
+        guard !courseName.isEmpty else { return nil }
+        let rawScore = pick(["cj", "cjmc", "cjz"])
+        return CourseScore(
+            courseCode: pick(["kch", "kch_id"]),
+            courseName: courseName,
+            teacher: pick(["jsxm", "xm", "jsmc"]),
+            score: Double(levelToNumber(rawScore)) ?? 0,
+            rawScore: rawScore,
+            gradePoint: Double(pick(["jd"])) ?? 0,
+            credit: Double(pick(["xf"])) ?? 0,
+            courseCategory: pick(["kcxzmc", "kclbmc", "kcxz"])
+        )
+    }
+
     /// 解析 kbList：kcmc 课程名、xm 老师、cdmc 地点、xqj 星期（1-7）、
     /// jcor 节次区间 "a-b"、zcd 周次（含 第/周/(单)/(双)）、jxbmc 备注。
     static func parseKbList(_ kbList: [[String: Any]]) -> [Course] {
