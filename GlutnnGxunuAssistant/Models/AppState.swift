@@ -76,7 +76,7 @@ final class AppState {
             semester = "春"
             year = y - 1
         }
-        currentWeek = currentWeek(for: school, on: date)
+        currentWeek = GlutnnGxunuAssistant.currentWeek(for: school, on: date)
     }
 
     /// 切学校：换配置、清登录态和验证码（Cookie 按 host 分桶，不用清）。
