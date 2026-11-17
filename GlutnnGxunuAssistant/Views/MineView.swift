@@ -87,6 +87,9 @@ struct MineView: View {
 struct ScoreView: View {
     @Environment(AppState.self) private var appState
 
+    /// 把成绩数组取成普通值，避免 ForEach(scores) 被解析成 Binding 集合。
+    private var scores: [CourseScore] { appState.scores }
+
     var body: some View {
         ZStack {
             Color(.systemGroupedBackground)
@@ -123,7 +126,7 @@ struct ScoreView: View {
                                 Text("平均绩点")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
-                                Text(String(format: "%.2f", gradePointAverage(appState.scores)))
+                                Text(String(format: "%.2f", gradePointAverage(scores)))
                                     .font(.title3)
                                     .fontWeight(.bold)
                             }
@@ -131,18 +134,18 @@ struct ScoreView: View {
                                 Text("平均分")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
-                                Text(String(format: "%.2f", averageScore(appState.scores)))
+                                Text(String(format: "%.2f", averageScore(scores)))
                                     .font(.title3)
                                     .fontWeight(.bold)
                             }
                             Spacer()
-                            Text("\(appState.scores.count) 门课")
+                            Text("\(scores.count) 门课")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
                     }
 
-                    ForEach(appState.scores) { score in
+                    ForEach(scores) { score in
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
                                 Text(score.courseName)
