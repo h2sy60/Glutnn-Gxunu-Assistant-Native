@@ -101,7 +101,7 @@ final class CookieJar {
 
 /// 联网客户端。超时统一 40 秒；不自动存 Cookie、不自动跟随重定向。
 final class NetworkClient {
-    static let shared = NetworkClient()
+    nonisolated(unsafe) static let shared = NetworkClient()
     static let timeout: TimeInterval = 40
 
     let cookies = CookieJar()
