@@ -43,8 +43,10 @@ enum GUTService {
             // 302 不会自动跟随（NetworkClient 关了重定向），直接读头。
             let location = response.value(forHTTPHeaderField: "Location") ?? ""
             if location == "/academic/index_new.jsp" {
+                AppLogger.shared.log("GUT login success")
                 return .success
             }
+            AppLogger.shared.log("GUT login failure, location=\(location)")
             return .failure("学号、密码或验证码错误")
         } catch let error as NetworkError {
             return .failure(error.errorDescription ?? "网络错误")
@@ -59,7 +61,9 @@ enum GUTService {
         do {
             let (data, _) = try await client.get(url)
             let html = decodeGUTHTML(data) ?? ""
-            return !html.contains("请重新登录")
+            let ok = !html.contains("请重新登录")
+            AppLogger.shared.log("GUT isLoggedIn: \(ok)")
+            return ok
         } catch {
             return false
         }
@@ -97,9 +101,13 @@ enum GUTService {
             throw ScheduleError.network(error.errorDescription ?? "网络错误")
         }
         guard let html = decodeGUTHTML(data), !html.isEmpty else {
+            AppLogger.shared.log("GUT schedule: empty or undecodable response, bytes=\(data.count)")
             throw ScheduleError.parseError
         }
-        return parseScheduleHTML(html)
+        AppLogger.shared.log("GUT schedule: bytes=\(data.count), decoded chars=\(html.count)")
+        let courses = parseScheduleHTML(html)
+        AppLogger.shared.log("GUT schedule: parsed \(courses.count) courses")
+        return courses
     }
 
     // MARK: - 课表 HTML 解析
@@ -117,6 +125,7 @@ enum GUTService {
         }
         let range = NSRange(html.startIndex..., in: html)
         let matches = rowRegex.matches(in: html, options: [], range: range)
+        AppLogger.shared.log("GUT parse: infolist rows matched=\(matches.count)")
 
         for match in matches {
             guard match.numberOfRanges == 4,
