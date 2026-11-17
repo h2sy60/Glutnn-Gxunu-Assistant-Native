@@ -70,14 +70,15 @@ enum GUTService {
     }
 
     /// 桂工老正方返回 GBK 编码的 HTML（Flutter 版 getHtml 用 gbk.decode）。
-    /// GB18030 是 GBK 的超集，解 GBK 完全兼容；先试 GB18030，再试 UTF-8。
+    /// 先试 UTF-8（UTF-8 页面直接成功），失败再试 GB18030（GBK 的超集）。
+    /// GBK 字节几乎不可能通过 UTF-8 校验，所以这个顺序对两种编码都对。
     static func decodeGUTHTML(_ data: Data) -> String? {
-        let gb18030 = CFStringConvertEncodingToNSStringEncoding(
-            CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue))
-        if let s = String(data: data, encoding: String.Encoding(rawValue: gb18030)), !s.isEmpty {
+        if let s = String(data: data, encoding: .utf8), !s.isEmpty {
             return s
         }
-        return String(data: data, encoding: .utf8)
+        let gb18030 = CFStringConvertEncodingToNSStringEncoding(
+            CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue))
+        return String(data: data, encoding: String.Encoding(rawValue: gb18030))
     }
 
     // MARK: - 课表
@@ -210,5 +211,73 @@ enum GUTService {
     private static func stripTags(_ s: String) -> String {
         let noTags = s.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
         return noTags.replacingOccurrences(of: "&nbsp;", with: "")
+    }
+
+    // MARK: - 成绩
+
+    /// 查成绩（全部学年学期：year/term 留空）。列与 Flutter 版一致：
+    /// td[2]=课程号、td[3]=课程名、td[4]=老师、td[5]=成绩、td[6]=绩点、
+    /// td[7]=学分、td[9]=含“免考”时成绩记“合格”、td[11]=课程类别。
+    static func fetchScores() async throws -> [CourseScore] {
+        guard await isLoggedIn() else { throw ScheduleError.sessionExpired }
+        let form = [
+            "year": "",
+            "term": "",
+            "prop": "",
+            "groupName": "",
+            "para": "0",
+            "sortColumn": "",
+            "Submit": "查询",
+        ]
+        guard let url = school.url("/academic/manager/score/studentOwnScore.do") else {
+            throw ScheduleError.network("地址无效")
+        }
+        let data: Data
+        do {
+            (data, _) = try await client.postForm(url, form: form)
+        } catch let error as NetworkError {
+            throw ScheduleError.network(error.errorDescription ?? "网络错误")
+        }
+        guard let html = decodeGUTHTML(data), !html.isEmpty else {
+            throw ScheduleError.parseError
+        }
+        if html.contains("提示信息") {
+            throw ScheduleError.network("请重试")
+        }
+        let scores = parseScoresHTML(html)
+        AppLogger.shared.log("GUT scores: parsed \(scores.count) items")
+        return scores
+    }
+
+    /// 解析桂工成绩页：取 class=datalist 的表，跳过表头行。
+    static func parseScoresHTML(_ html: String) -> [CourseScore] {
+        var scores: [CourseScore] = []
+        guard let tableRegex = try? NSRegularExpression(
+            pattern: #"<table[^>]*datalist[^>]*>([\s\S]*?)</table>"#,
+            options: [.caseInsensitive, .dotMatchesLineSeparators]),
+            let tableMatch = tableRegex.firstMatch(in: html, options: [], range: NSRange(html.startIndex..., in: html)),
+            tableMatch.numberOfRanges >= 2,
+            let tableRange = Range(tableMatch.range(at: 1), in: html) else { return [] }
+        let tableHTML = String(html[tableRange])
+        let rows = trRows(tableHTML)
+        // 第 0 行是表头，从第 1 行开始。
+        for rowHTML in rows.dropFirst() {
+            let cells = tdTexts(rowHTML)
+            guard cells.count >= 12 else { continue }
+            var rawScore = cells[5]
+            if cells[9].contains("免考") { rawScore = "合格" }
+            let score = Double(levelToNumber(rawScore)) ?? 0
+            scores.append(CourseScore(
+                courseCode: cells[2],
+                courseName: cells[3],
+                teacher: cells[4],
+                score: score,
+                rawScore: rawScore,
+                gradePoint: Double(cells[6]) ?? 0,
+                credit: Double(cells[7]) ?? 0,
+                courseCategory: cells[11]
+            ))
+        }
+        return scores
     }
 }
