@@ -20,7 +20,7 @@ enum GXVNUService {
     private static var client: NetworkClient { .shared }
 
     /// 课表响应里顺带取到的学生姓名（xsxx.XM），供 AppState 显示。
-    static var lastStudentName: String?
+    nonisolated(unsafe) static var lastStudentName: String?
 
     /// 模拟 iPhone Safari 的 UA（Flutter 版实测：Dart 默认 UA 会被
     /// 正方当成非浏览器请求、轮换会话）。
