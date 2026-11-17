@@ -87,9 +87,10 @@ struct MineView: View {
 struct ScoreView: View {
     @Environment(AppState.self) private var appState
 
-    /// 成绩数组取成普通值；行列表用 List(scores, id:)（不用 ForEach，
-    /// ForEach 在此 @Environment + @Observable 上下文里总被解析成 Binding）。
-    private var scores: [CourseScore] { appState.scores }
+    /// 成绩数组存在 @State 里（普通值）。直接用 appState.scores 时，
+    /// List/ForEach 在此 @Environment + @Observable 上下文里总被解析成 Binding，
+    /// 所以用 @State 快照，.task 与 .onChange 再从 appState 同步。
+    @State private var scores: [CourseScore] = []
 
     var body: some View {
         ZStack {
@@ -181,6 +182,10 @@ struct ScoreView: View {
             if appState.scores.isEmpty && appState.scoresError == nil {
                 await appState.refreshScores()
             }
+            scores = appState.scores
+        }
+        .onChange(of: appState.scores.count) { _, _ in
+            scores = appState.scores
         }
     }
 }
