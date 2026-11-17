@@ -58,11 +58,22 @@ enum GUTService {
         guard let url = school.url("/academic/showPersonalInfo.do") else { return false }
         do {
             let (data, _) = try await client.get(url)
-            let html = String(data: data, encoding: .utf8) ?? ""
+            let html = decodeGUTHTML(data) ?? ""
             return !html.contains("请重新登录")
         } catch {
             return false
         }
+    }
+
+    /// 桂工老正方返回 GBK 编码的 HTML（Flutter 版 getHtml 用 gbk.decode）。
+    /// GB18030 是 GBK 的超集，解 GBK 完全兼容；先试 GB18030，再试 UTF-8。
+    static func decodeGUTHTML(_ data: Data) -> String? {
+        let gb18030 = CFStringConvertEncodingToNSStringEncoding(
+            CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue))
+        if let s = String(data: data, encoding: String.Encoding(rawValue: gb18030)), !s.isEmpty {
+            return s
+        }
+        return String(data: data, encoding: .utf8)
     }
 
     // MARK: - 课表
@@ -85,7 +96,7 @@ enum GUTService {
         } catch let error as NetworkError {
             throw ScheduleError.network(error.errorDescription ?? "网络错误")
         }
-        guard let html = String(data: data, encoding: .utf8), !html.isEmpty else {
+        guard let html = decodeGUTHTML(data), !html.isEmpty else {
             throw ScheduleError.parseError
         }
         return parseScheduleHTML(html)
