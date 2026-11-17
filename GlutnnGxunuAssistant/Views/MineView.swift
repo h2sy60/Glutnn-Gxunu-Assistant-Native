@@ -43,6 +43,12 @@ struct MineView: View {
                     }
 
                     Section {
+                        ShareLink("导出日志", item: AppLogger.shared.exportText())
+                    } footer: {
+                        Text("遇到问题时导出日志，方便定位。")
+                    }
+
+                    Section {
                         Button(role: .destructive) {
                             appState.logout()
                         } label: {
