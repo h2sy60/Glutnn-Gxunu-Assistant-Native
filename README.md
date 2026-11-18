@@ -2,6 +2,12 @@
 
 桂工课程助手 —— SwiftUI（iOS 26，Liquid Glass 用系统 `.glassEffect()`）。
 
+## 截图
+
+| 一览 | 课表 | 我的 |
+| --- | --- | --- |
+| <img src="screenshots/home.jpg" width="250"> | <img src="screenshots/schedule.jpg" width="250"> | <img src="screenshots/mine.jpg" width="250"> |
+
 ## 功能
 
 ### 双学校
