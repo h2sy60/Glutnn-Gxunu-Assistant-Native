@@ -95,6 +95,43 @@ struct MineView: View {
                                 .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 26))
                             }
 
+                            // 时间管理（build 60，旧项目 TimeManagePage）：改每节上下课时间，两校都有。
+                            NavigationLink(destination: TimeManageView()) {
+                                HStack {
+                                    Image(systemName: "clock.fill")
+                                        .foregroundStyle(.white)
+                                    Text("时间管理")
+                                        .foregroundStyle(.white)
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .foregroundStyle(.white.opacity(0.7))
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 14)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 26))
+                            }
+
+                            // 显示调课/补课（build 60，旧项目 setting.dart showScheduleChange，
+                            // 默认隐藏）。只桂工有调课接口；打开后下次刷新课表会把调课/补课
+                            // 应用上去（旧项目改完提示“记得刷新一下课表噢!”）。
+                            if appState.school.id == .gut {
+                                glassCard {
+                                    HStack {
+                                        Image(systemName: "arrow.triangle.2.circlepath")
+                                            .foregroundStyle(.white)
+                                        Text("显示调课/补课")
+                                            .foregroundStyle(.white)
+                                        Spacer()
+                                        Toggle("", isOn: Binding(
+                                            get: { GUTService.showScheduleChange },
+                                            set: { GUTService.showScheduleChange = $0 }
+                                        ))
+                                        .labelsHidden()
+                                    }
+                                }
+                            }
+
                             // 关于（build 49）：作者信息、版本、检测更新、作者 GitHub
                             NavigationLink(destination: AboutView()) {
                                 HStack {
@@ -157,6 +194,83 @@ struct MineView: View {
 }
 
 // MARK: - 成绩页：列表 + 平均绩点/平均分（与 Flutter 版口径一致）
+
+// MARK: - 时间管理（build 60，旧项目 TimeManagePage）
+
+/// 改每节上下课时间（两校都有，按学校存）。旧项目是文本框改时:分，
+/// 原生用系统时间选择器；保存后课表与首页立即用新时间（读生效时间）。
+struct TimeManageView: View {
+    @Environment(AppState.self) private var appState
+
+    @State private var startDates: [Date] = []
+    @State private var endDates: [Date] = []
+    @State private var notice: String? = nil
+
+    private var school: SchoolConfig { appState.school }
+
+    var body: some View {
+        ZStack {
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
+            List {
+                Section {
+                    if startDates.count == school.sectionCount, endDates.count == school.sectionCount {
+                        ForEach(0..<school.sectionCount, id: \.self) { i in
+                            HStack {
+                                Text("第 \(i + 1) 节")
+                                Spacer()
+                                DatePicker("", selection: $startDates[i], displayedComponents: .hourAndMinute)
+                                    .labelsHidden()
+                                Text("–")
+                                    .foregroundStyle(.secondary)
+                                DatePicker("", selection: $endDates[i], displayedComponents: .hourAndMinute)
+                                    .labelsHidden()
+                            }
+                        }
+                    } else {
+                        ProgressView("正在读取作息…")
+                    }
+                } header: {
+                    Text("按\(school.displayName)作息修改，保存后课表与首页立即生效")
+                }
+                Section {
+                    Button("恢复默认") {
+                        CustomSectionTimes.reset(for: school.id)
+                        load()
+                        notice = "已恢复默认作息"
+                    }
+                    Button("保存") {
+                        let cal = Calendar(identifier: .gregorian)
+                        let start = startDates.map { [cal.component(.hour, from: $0), cal.component(.minute, from: $0)] }
+                        let end = endDates.map { [cal.component(.hour, from: $0), cal.component(.minute, from: $0)] }
+                        CustomSectionTimes.save(CustomSectionTimes(start: start, end: end), for: school.id)
+                        notice = "已保存"
+                    }
+                }
+                if let notice {
+                    Section {
+                        Text(notice)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
+        }
+        .navigationTitle("时间管理")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear { load() }
+    }
+
+    private func load() {
+        let cal = Calendar(identifier: .gregorian)
+        let today = Date()
+        func date(hour: Int, minute: Int) -> Date {
+            cal.date(bySettingHour: hour, minute: minute, second: 0, of: today) ?? today
+        }
+        startDates = school.effectiveStartTimeList.map { date(hour: $0.0, minute: $0.1) }
+        endDates = school.effectiveEndTimeList.map { date(hour: $0.0, minute: $0.1) }
+    }
+}
 
 struct ScoreView: View {
     @Environment(AppState.self) private var appState
@@ -612,6 +726,9 @@ struct GXVNUMoreView: View {
                     NavigationLink(destination: GXVNUThesisView()) {
                         moreRowContent(icon: "graduationcap.fill", title: "毕设", subtitle: "已选题数与选题列表")
                     }
+                    NavigationLink(destination: GXVNUCareerView()) {
+                        moreRowContent(icon: "chart.line.uptrend.xyaxis", title: "生涯预估", subtitle: "大学进程与全部/专业课程、通过情况")
+                    }
                 }
                 Section("通知与学籍") {
                     NavigationLink(destination: GXVNUToDosView()) {
@@ -665,6 +782,9 @@ struct GUTMoreView: View {
                     }
                     NavigationLink(destination: GUTClassroomQueryView()) {
                         gutMoreRowContent(icon: "building.2.fill", title: "空教室查询", subtitle: "按教学楼、周次、星期查空教室")
+                    }
+                    NavigationLink(destination: GUTCareerView()) {
+                        gutMoreRowContent(icon: "chart.line.uptrend.xyaxis", title: "生涯预估", subtitle: "大学进程与全部/专业课程、通过情况")
                     }
                 }
             }
@@ -923,6 +1043,261 @@ struct GUTClassroomQueryView: View {
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? "查询失败"
             rooms = []
+        }
+    }
+}
+
+// MARK: - 生涯预估（build 60，旧项目 teachingPlanPage type 1「我的大学生涯」）
+
+/// 大学进程（旧项目 teachingPlan.dart progress() 同款口径）：
+/// 入学当年 9 月 → 毕业当年 6 月，(今天 - 开学) / (毕业 - 开学)。
+/// 已毕业返回 1，未入学返回 0，年级/学制缺失返回 0。
+func collegeProgress(grade: Int, schoolingLength: Int) -> Double {
+    guard grade > 0, schoolingLength > 0 else { return 0 }
+    let cal = Calendar(identifier: .gregorian)
+    guard let start = cal.date(from: DateComponents(year: grade, month: 9, day: 1)),
+          let end = cal.date(from: DateComponents(year: grade + schoolingLength, month: 6, day: 30)) else { return 0 }
+    let now = Date()
+    if now >= end { return 1 }
+    if now <= start { return 0 }
+    return now.timeIntervalSince(start) / end.timeIntervalSince(start)
+}
+
+/// 大学进程圆环（旧项目 _DynamicCircularProgressBar 同款样式，100×100）。
+struct CareerProgressRing: View {
+    let progress: Double
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(Color.secondary.opacity(0.25), lineWidth: 8)
+            Circle()
+                .trim(from: 0, to: CGFloat(min(max(progress, 0), 1)))
+                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 8, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            VStack(spacing: 0) {
+                Text("\(Int(progress * 100))%")
+                    .font(.system(size: 22, weight: .bold))
+                Text("大学进程")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 100, height: 100)
+    }
+}
+
+/// 生涯预估里的一组大数字（值 + 说明）。
+private struct CareerStat: View {
+    let value: String
+    let label: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value)
+                .font(.system(size: 28, weight: .light))
+            Text(label)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// 桂工生涯预估：大学进程 + 全部/专业课程 + 成绩合格/重修补考/成绩未知
+/// （数据来自教学计划，旧项目 teachingPlanPage type 1 同款）。
+struct GUTCareerView: View {
+    @State private var plan: GUTTeachingPlan? = nil
+    @State private var isLoading = false
+    @State private var errorMessage: String? = nil
+
+    private var progress: Double {
+        guard let plan else { return 0 }
+        return collegeProgress(grade: plan.grade, schoolingLength: plan.schoolingLength)
+    }
+
+    var body: some View {
+        ZStack {
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
+            if isLoading, plan == nil {
+                ProgressView("正在拉取教学计划…")
+            } else if let errorMessage, plan == nil {
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                    Text(errorMessage)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Button("重新拉取") {
+                        Task { await load() }
+                    }
+                }
+            } else if let plan {
+                List {
+                    Section {
+                        HStack(spacing: 20) {
+                            CareerProgressRing(progress: progress)
+                            VStack(alignment: .leading, spacing: 14) {
+                                CareerStat(value: "\(plan.totalCourseCount)", label: "全部课程")
+                                CareerStat(value: "\(plan.totalMajorCourseCount)", label: "专业课程")
+                            }
+                            Spacer()
+                        }
+                        .padding(.vertical, 8)
+                    }
+                    Section("成绩") {
+                        HStack {
+                            CareerStat(value: "\(plan.passCount) 门", label: "成绩合格")
+                            Spacer()
+                            CareerStat(value: "\(plan.failCount) 门", label: "重修/补考")
+                            Spacer()
+                            CareerStat(value: "\(plan.unknownCount) 门", label: "成绩未知")
+                        }
+                    }
+                    Section("说明") {
+                        Text("大学进程按入学年份 9 月至毕业当年 6 月计算；课程数与通过情况来自教学计划。")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .listStyle(.insetGrouped)
+            }
+        }
+        .navigationTitle("生涯预估")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await load() }
+    }
+
+    private func load() async {
+        guard !isLoading else { return }
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            plan = try await GUTService.fetchTeachingPlan()
+            errorMessage = nil
+        } catch let error as ScheduleError {
+            errorMessage = error == .sessionExpired ? "登录已过期，请重新登录" : error.errorDescription
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? "拉取教学计划失败"
+        }
+    }
+}
+
+/// 职师院生涯预估：大学进程 + 全部/专业课程 + 成绩合格/重修补考/在修。
+/// 数据复用毕业进度那套（教学计划 + 计划课程 + 已选课程 + 成绩 + 个人信息里的学制）。
+/// 职师院没有教学计划里的通过/未通过计数，所以底下一行用成绩与在修数据。
+struct GXVNUCareerView: View {
+    @State private var totalCourseCount = 0
+    @State private var majorCourseCount = 0
+    @State private var passCount = 0
+    @State private var failCount = 0
+    @State private var inProgressCount = 0
+    @State private var grade = 0
+    @State private var schoolingLength = 4
+    @State private var isLoading = false
+    @State private var errorMessage: String? = nil
+    @State private var hasLoaded = false
+
+    private var progress: Double {
+        collegeProgress(grade: grade, schoolingLength: schoolingLength)
+    }
+
+    var body: some View {
+        ZStack {
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
+            if isLoading, !hasLoaded {
+                ProgressView("正在拉取教学计划…")
+            } else if let errorMessage, !hasLoaded {
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                    Text(errorMessage)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Button("重新拉取") {
+                        Task { await load() }
+                    }
+                }
+            } else {
+                List {
+                    Section {
+                        HStack(spacing: 20) {
+                            CareerProgressRing(progress: progress)
+                            VStack(alignment: .leading, spacing: 14) {
+                                CareerStat(value: "\(totalCourseCount)", label: "全部课程")
+                                CareerStat(value: "\(majorCourseCount)", label: "专业课程")
+                            }
+                            Spacer()
+                        }
+                        .padding(.vertical, 8)
+                    }
+                    Section("成绩") {
+                        HStack {
+                            CareerStat(value: "\(passCount) 门", label: "成绩合格")
+                            Spacer()
+                            CareerStat(value: "\(failCount) 门", label: "重修/补考")
+                            Spacer()
+                            CareerStat(value: "\(inProgressCount) 门", label: "在修")
+                        }
+                    }
+                    Section("说明") {
+                        Text("大学进程按入学年份 9 月至毕业当年 6 月计算；课程数来自教学执行计划，通过情况来自成绩，在修来自已选课程。")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .listStyle(.insetGrouped)
+            }
+        }
+        .navigationTitle("生涯预估")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await load() }
+    }
+
+    private func load() async {
+        guard !isLoading else { return }
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            let ids = try await GXVNUService.resolveAcademicIDs()
+            let plans = try await GXVNUService.fetchTeachingPlan(ids: ids)
+            let myPlan = plans.first { $0.majorName == ids.major }
+                ?? plans.first { !$0.majorName.isEmpty && ids.major.contains($0.majorName) }
+                ?? plans.first { !$0.majorName.isEmpty && $0.majorName.contains(ids.major) }
+                ?? plans.first
+            guard let plan = myPlan else {
+                errorMessage = "未找到本专业教学计划"
+                return
+            }
+            totalCourseCount = plan.courseCount
+            grade = Int(ids.grade) ?? 0
+            // 学制：个人信息里的 duration（如 "4"），取第一个数字，默认 4 年。
+            if let profile = try? await GXVNUService.fetchProfile() {
+                let digits = profile.duration.filter { $0.isNumber }
+                if let years = Int(digits), years > 0 { schoolingLength = years }
+            }
+            // 专业课程：计划课程里类别含“专业”的。
+            if !plan.planId.isEmpty {
+                let planCourses = try await GXVNUService.fetchPlanCourses(planId: plan.planId)
+                majorCourseCount = planCourses.filter { $0.category.contains("专业") }.count
+                if totalCourseCount == 0 { totalCourseCount = planCourses.count }
+            }
+            // 在修（已选课程）。
+            let selected = try await GXVNUService.fetchSelectedCourses()
+            inProgressCount = selected.count
+            // 通过情况（成绩 >= 60 合格）。
+            let scores = try await GXVNUService.fetchScores(year: nil, term: nil)
+            passCount = scores.filter { $0.score >= 60 }.count
+            failCount = scores.filter { $0.score < 60 }.count
+            hasLoaded = true
+            errorMessage = nil
+        } catch let error as ScheduleError {
+            errorMessage = error == .sessionExpired ? "登录已过期，请重新登录" : error.errorDescription
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? "拉取失败"
         }
     }
 }
