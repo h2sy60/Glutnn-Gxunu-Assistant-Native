@@ -9,6 +9,11 @@ on:
       - '.github/workflows/ios-unsigned-ipa.yml'
   workflow_dispatch:
 
+# 只留最新一次构建：删旧构建需要 actions:write（默认 token 删不了 workflow run）。
+permissions:
+  actions: write
+  contents: read
+
 jobs:
   build:
     runs-on: macos-26
@@ -59,3 +64,27 @@ jobs:
           name: Glutnn-Gxunu-Assistant-Native-unsigned-ipa
           path: Glutnn-Gxunu-Assistant-Native-unsigned.ipa
           retention-days: 90
+
+      # 只留最新一次构建：构建成功后删掉本 workflow 之前所有的 run（不含本次）。
+      # continue-on-error：删失败也不让一次成功的构建变红。
+      - name: Delete old workflow runs (keep only this build)
+        continue-on-error: true
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'ios-unsigned-ipa.yml',
+              per_page: 100
+            });
+            for (const run of runs) {
+              if (run.id !== context.runId) {
+                console.log(`Deleting run ${run.id} (${run.head_sha})`);
+                await github.rest.actions.deleteWorkflowRun({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  run_id: run.id
+                });
+              }
+            }
