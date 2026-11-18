@@ -4,28 +4,81 @@ import UIKit // 仅用于把验证码图片 Data 解成 UIImage 再交给 SwiftU
 /// 根视图：三个 Tab 常驻（一览 / 课表 / 我的），不登录也能进。
 /// 旧版 Flutter 就是这样：启动读本地缓存直接进首页，登录只是 push 进来的一个页面，
 /// 右上角有关闭钮；只有点刷新/成绩/考试且未登录时，才弹登录页。
-/// iOS 26 的 TabView 自带 Liquid Glass 底栏，无需手写。
+/// 底栏是手写的悬浮玻璃条（build 33）：系统 TabView 的底栏不跟
+/// .preferredColorScheme 走（build 32 实测：在课表页切亮色也没用，底栏还是深灰），
+/// 只有自己画的玻璃才能用 tint 精确控制深浅——课表白底页用浅色玻璃，
+/// 首页/我的深色壁纸用深色玻璃（和课表页导出/日期药丸同一招，管用）。
 struct ContentView: View {
     @Environment(AppState.self) private var appState
     @State private var selectedTab = 0
 
-    var body: some View {
-        TabView(selection: $selectedTab) {
-            Tab("一览", systemImage: "house.fill", value: 0) {
-                HomeView(selectedTab: $selectedTab)
-            }
-            Tab("课表", systemImage: "calendar", value: 1) {
-                ScheduleView()
-            }
-            Tab("我的", systemImage: "person.fill", value: 2) {
-                MineView()
+    /// 课表页时底栏要浅色玻璃，其余页深色玻璃。
+    private var isLightBar: Bool { selectedTab == 1 }
+
+    /// 底栏玻璃：浅色页加白 tint，深色页用默认深色玻璃。
+    private var tabBarGlass: Glass {
+        isLightBar ? .regular.tint(.white.opacity(0.75)) : .regular
+    }
+
+    private func tabItemIconColor(selected: Bool) -> Color {
+        if isLightBar {
+            return selected ? Color.black.opacity(0.87) : Color.black.opacity(0.5)
+        }
+        return selected ? .white : .white.opacity(0.7)
+    }
+
+    /// 手写悬浮底栏：三项（图标 + 文字），选中项背后一颗灰色小胶囊。
+    private func tabBar() -> some View {
+        HStack(spacing: 0) {
+            ForEach([(0, "house.fill", "一览"), (1, "calendar", "课表"), (2, "person.fill", "我的")], id: \.0) { item in
+                Button {
+                    selectedTab = item.0
+                } label: {
+                    VStack(spacing: 2) {
+                        Image(systemName: item.1)
+                            .font(.system(size: 22, weight: .semibold))
+                        Text(item.2)
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .foregroundStyle(tabItemIconColor(selected: selectedTab == item.0))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                    .background(
+                        selectedTab == item.0
+                            ? Color.gray.opacity(0.3)
+                            : Color.clear,
+                        in: Capsule()
+                    )
+                }
             }
         }
-        .tint(.white)
-        // 底栏玻璃跟着当前页走：课表是白底页，底栏要是深色玻璃就灰一块（build 31 图里
-        // 圈出来的底栏就是这么灰的）；切到课表时整 TabView 用亮色，底栏变浅色玻璃，
-        // 回首页/我的页恢复深色。只影响当前可见的页，离屏的页不参与。
-        .preferredColorScheme(selectedTab == 1 ? .light : .dark)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .glassEffect(tabBarGlass, in: Capsule())
+        .padding(.horizontal, 24)
+        .padding(.bottom, 8)
+    }
+
+    var body: some View {
+        ZStack {
+            // 三页常驻（opacity 藏起来、关掉点按，@State 不丢）：
+            // 切 Tab 不重建页面，课表当时看的周、首页的状态都留着。
+            HomeView(selectedTab: $selectedTab)
+                .opacity(selectedTab == 0 ? 1 : 0)
+                .allowsHitTesting(selectedTab == 0)
+            ScheduleView()
+                .opacity(selectedTab == 1 ? 1 : 0)
+                .allowsHitTesting(selectedTab == 1)
+            MineView()
+                .opacity(selectedTab == 2 ? 1 : 0)
+                .allowsHitTesting(selectedTab == 2)
+
+            // 悬浮底栏钉在底部。
+            VStack {
+                Spacer()
+                tabBar()
+            }
+        }
         .fullScreenCover(isPresented: Binding(
             get: { appState.showLoginSheet },
             set: { appState.showLoginSheet = $0 }
