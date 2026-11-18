@@ -215,6 +215,79 @@ struct Toast: Identifiable, Equatable {
     static func == (lhs: Toast, rhs: Toast) -> Bool { lhs.id == rhs.id }
 }
 
+// MARK: - 课表外观设置（build 48，参考 WakeUp「课表外观」）
+//
+// 按“学校 + 学号”永久保存（UserDefaults，JSON）：当前用户 + 当前学校
+// 登录就是这一套；再调就覆盖保存，下次就是新的。
+// 默认：黑字（不透明度 0.75，比原来 0.85 再浅一点），其余与原来一致。
+struct ScheduleAppearance: Codable, Equatable {
+    /// 文字颜色（hex，如 "#000000"）。
+    var textColorHex: String
+    /// 文字不透明度（0.3...1.0）：调“深浅”。默认 0.75。
+    var textOpacity: Double
+    /// 课名字号（11...16）。默认 13。
+    var fontSize: Double
+    /// 格子内显示开始时间。默认 true。
+    var showStartTime: Bool
+    /// 格子内显示上课地点。默认 true。
+    var showLocation: Bool
+    /// 教室前显示 @。默认 true。
+    var showAtSign: Bool
+    /// 格子内显示授课老师（仅占 2 节以上的块）。默认 true。
+    var showTeacher: Bool
+    /// 格子内显示备注（course.extra，仅占 2 节以上的块）。默认 false。
+    var showExtra: Bool
+    /// 格子圆角半径（0...20）。默认 10。
+    var cornerRadius: Double
+    /// 格子底色不透明度（0.3...1.0）。默认 1.0。
+    var blockOpacity: Double
+
+    static let `default` = ScheduleAppearance(
+        textColorHex: "#000000",
+        textOpacity: 0.75,
+        fontSize: 13,
+        showStartTime: true,
+        showLocation: true,
+        showAtSign: true,
+        showTeacher: true,
+        showExtra: false,
+        cornerRadius: 10,
+        blockOpacity: 1.0
+    )
+
+    /// 块内文字颜色（文字色 × 不透明度）。
+    var textColor: Color {
+        Color(hex: textColorHex).opacity(textOpacity)
+    }
+
+    /// 从 ColorPicker 的 Color 回写 hex（只取 RGB，不含透明度）。
+    mutating func setTextColor(_ color: Color) {
+        if let hex = color.toHex() { textColorHex = hex }
+    }
+}
+
+extension Color {
+    /// hex（"#RRGGBB"）→ Color。非法返回黑色。
+    init(hex: String) {
+        var h = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        if h.hasPrefix("#") { h.removeFirst() }
+        var rgb: UInt64 = 0
+        Scanner(string: h).scanHexInt64(&rgb)
+        let r = Double((rgb >> 16) & 0xFF) / 255
+        let g = Double((rgb >> 8) & 0xFF) / 255
+        let b = Double(rgb & 0xFF) / 255
+        self.init(red: r, green: g, blue: b)
+    }
+
+    /// Color → hex（"#RRGGBB"）。取不出来返回 nil。
+    func toHex() -> String? {
+        let ui = UIColor(self)
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        guard ui.getRed(&r, green: &g, blue: &b, alpha: &a) else { return nil }
+        return String(format: "#%02X%02X%02X", Int(r * 255), Int(g * 255), Int(b * 255))
+    }
+}
+
 // MARK: - App 状态（唯一数据源）
 //
 // 账号按学校存在 UserDefaults（学号）+ Keychain（密码），登录成功即保存；
@@ -231,6 +304,39 @@ final class AppState {
     var studentName = ""
     /// 密码只存 Keychain，供自动重登用。
     var password = ""
+
+    /// 课表外观（build 48）：按学校 + 学号永久保存，登录即用这一套。
+    var scheduleAppearance: ScheduleAppearance = .default
+
+    /// 外观设置的 UserDefaults 键（学校 + 学号；没学号用 guest）。
+    private static func appearanceKey(schoolId: SchoolID, studentId: String) -> String {
+        "ScheduleAppearance_v1.\(schoolId.rawValue).\(studentId.isEmpty ? "guest" : studentId)"
+    }
+
+    /// 读当前学校 + 学号的外观设置（没有就用默认）。
+    func loadScheduleAppearance() {
+        let key = Self.appearanceKey(schoolId: school.id, studentId: studentId)
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let saved = try? JSONDecoder().decode(ScheduleAppearance.self, from: data) else {
+            scheduleAppearance = .default
+            return
+        }
+        scheduleAppearance = saved
+    }
+
+    /// 保存当前外观设置（调完即记，下次登录就是这套）。
+    func saveScheduleAppearance() {
+        let key = Self.appearanceKey(schoolId: school.id, studentId: studentId)
+        if let data = try? JSONEncoder().encode(scheduleAppearance) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    /// 恢复默认外观（并保存）。
+    func resetScheduleAppearance() {
+        scheduleAppearance = .default
+        saveScheduleAppearance()
+    }
 
     /// 当前学期：年（如 2026）+ 学期（"秋"/"春"）。
     var year: Int = 2026
@@ -358,6 +464,8 @@ final class AppState {
             courses = cached.courses
             if !cached.studentName.isEmpty { studentName = cached.studentName }
         }
+        // 读当前学校 + 学号的课表外观（build 48）。
+        loadScheduleAppearance()
     }
 
     /// 按当前日期算学年学期（8 月及以后为秋季学期）。
@@ -422,6 +530,8 @@ final class AppState {
             // 桂工每次登录都要验证码，行直接亮出来（图到了再填）；职师院默认不要。
             showCaptcha = newSchool.captchaRequired
             updateTermFromDate()
+            // 读目标学校 + 学号的课表外观（build 48），和切学校同一帧换掉。
+            loadScheduleAppearance()
         }
         // 若新学校需要验证码，由 switchSchool 内部统一发起唯一请求，
         // 按钮里不要再另起 Task（双 Task 竞态改 showCaptcha 是崩溃源之一）。
@@ -675,6 +785,8 @@ final class AppState {
             AppLogger.shared.log("login \(school.id) success")
             // 登录成功即保存账号，下次启动免输。
             CredentialsStore.save(schoolId: school.id, studentId: studentId, password: password)
+            // 读该用户 + 该校的课表外观（build 48）：换账号登录即换一套。
+            loadScheduleAppearance()
             isLoggedIn = true
             loginError = nil
             showCaptcha = false
@@ -729,6 +841,8 @@ final class AppState {
         NetworkClient.shared.cookies.clearAll()
         // 退出登录清掉全部已存账号（下次启动不再自动登录）。
         CredentialsStore.clearAll()
+        // 外观回到默认（未登录的 guest 键）。
+        loadScheduleAppearance()
     }
 
     /// 启动恢复：有已存账号才做事。

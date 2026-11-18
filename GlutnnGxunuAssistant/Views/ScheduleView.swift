@@ -7,8 +7,8 @@ import EventKit // 导出到日历（EventKit）：建日历、写课程事件�
 //      “2026-11-18📍”玻璃药丸；点标题或日期都回到当前周。没有左右箭头，没有日期范围。
 // 周 strip：只有星期字（一 二 三 四 五 六 日），当天是黑色圆角 pill；
 //      showDayByWeekDay 默认 false，所以不显示日期数字。
-// 网格：白底 + 虚线网格 + 淡彩色块 + 白字（build 47：Russell 原来的淡色，
-//      只把字改成白字，色块不动）；左栏是节号 + 开始 + 结束时间；
+// 网格：白底 + 虚线网格 + 淡彩色块 + 黑字（build 48：字色改回黑色、
+//      比原来 0.85 再浅一点（默认不透明度 0.75），外观由「课表设置」调）；
 //      块内是开始时间 + 全名（换行）+ 占两节以上再显示老师 + @教室（最多 3 行）。
 //      行高按屏幕高度算：（屏幕高 − 180 − 85）/ 除数，夹在 50–92；
 //      桂工除数 8.2（首屏 9 节）、职师院 9.2（首屏 10 节）。
@@ -219,6 +219,7 @@ struct ScheduleView: View {
                                             courses: list,
                                             school: appState.school,
                                             rowHeight: rowHeightValue,
+                                            appearance: appState.scheduleAppearance,
                                             onSelect: { start, end, course in
                                                 selectedBlock = (start, end, course)
                                             }
@@ -331,6 +332,8 @@ struct ScheduleGrid: View {
     let courses: [Course]
     let school: SchoolConfig
     let rowHeight: CGFloat
+    /// 课表外观（build 48）：文字颜色/字号/显示项/圆角/不透明度，按学校 + 学号保存。
+    var appearance: ScheduleAppearance = .default
     /// 点课程块回调（start/end 是合并后的节次范围）。
     var onSelect: ((Int, Int, Course) -> Void)? = nil
 
@@ -415,30 +418,42 @@ struct ScheduleGrid: View {
                     let h = CGFloat(block.end - block.start + 1) * rowHeight - 4
                     let span = block.end - block.start + 1
                     let tall = span >= 2
+                    let atSign = appearance.showAtSign ? "@" : ""
                     VStack(spacing: 2) {
-                        Text(timeText(school.startTimeList[block.start - 1]))
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.9))
+                        if appearance.showStartTime {
+                            Text(timeText(school.startTimeList[block.start - 1]))
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(appearance.textColor)
+                        }
                         Text(block.course.name)
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(.white)
+                            .font(.system(size: appearance.fontSize, weight: .bold))
+                            .foregroundStyle(appearance.textColor)
                             .lineLimit(tall ? 4 : 2)
                             .multilineTextAlignment(.center)
-                        if tall {
+                        if tall && appearance.showTeacher {
                             Text(block.course.teacher)
                                 .font(.system(size: 11))
-                                .foregroundStyle(.white.opacity(0.85))
+                                .foregroundStyle(appearance.textColor)
                                 .lineLimit(1)
                         }
-                        Text("@\(block.course.location)")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.white.opacity(0.85))
-                            .lineLimit(3)
-                            .multilineTextAlignment(.center)
+                        if appearance.showLocation {
+                            Text("\(atSign)\(block.course.location)")
+                                .font(.system(size: 11))
+                                .foregroundStyle(appearance.textColor)
+                                .lineLimit(3)
+                                .multilineTextAlignment(.center)
+                        }
+                        if tall && appearance.showExtra, !block.course.extra.isEmpty {
+                            Text(block.course.extra)
+                                .font(.system(size: 10))
+                                .foregroundStyle(appearance.textColor)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.center)
+                        }
                     }
                     .frame(width: w, height: h)
-                    .background(courseColor(for: block.course.name), in: RoundedRectangle(cornerRadius: 10))
-                    .contentShape(RoundedRectangle(cornerRadius: 10))
+                    .background(courseColor(for: block.course.name).opacity(appearance.blockOpacity), in: RoundedRectangle(cornerRadius: appearance.cornerRadius))
+                    .contentShape(RoundedRectangle(cornerRadius: appearance.cornerRadius))
                     .onTapGesture { onSelect?(block.start, block.end, block.course) }
                     .offset(x: x, y: y)
                 }
@@ -973,5 +988,133 @@ struct ScheduleExportView: View {
             try? await Task.sleep(nanoseconds: 2_500_000_000)
             if toastText == text { toastText = nil }
         }
+    }
+}
+
+// MARK: - 课表设置页（build 48，参考 WakeUp「课表外观」）
+//
+// 入口在“我的”页。调完即永久保存（按学校 + 学号），下次登录就是这套；
+// 再调就覆盖保存。顶部是实时预览，改一项预览立刻变。
+struct ScheduleSettingsView: View {
+    @Environment(AppState.self) private var appState
+
+    var body: some View {
+        @Bindable var appState = appState
+        Form {
+            // 实时预览
+            Section {
+                HStack(spacing: 10) {
+                    previewBlock(name: "高等数学B", teacher: "宋江艳", location: "4504D", time: "08:40", color: coursePalette[3], appearance: appState.scheduleAppearance)
+                    previewBlock(name: "大学英语（一）", teacher: "李孟娜", location: "1203D", time: "08:40", color: coursePalette[0], appearance: appState.scheduleAppearance)
+                    previewBlock(name: "中国近现代史纲要", teacher: "黄泽楷", location: "6402D", time: "08:40", color: coursePalette[1], appearance: appState.scheduleAppearance)
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.vertical, 6)
+            } header: {
+                Text("预览")
+            }
+
+            // 文字
+            Section {
+                ColorPicker("文字颜色", selection: Binding(
+                    get: { Color(hex: appState.scheduleAppearance.textColorHex) },
+                    set: { newColor in
+                        var appearance = appState.scheduleAppearance
+                        appearance.setTextColor(newColor)
+                        appState.scheduleAppearance = appearance
+                    }
+                ))
+                HStack {
+                    Text("文字深浅")
+                    Slider(value: $appState.scheduleAppearance.textOpacity, in: 0.3...1.0, step: 0.05)
+                    Text("\(Int(appState.scheduleAppearance.textOpacity * 100))")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 32, alignment: .trailing)
+                }
+                Stepper("字体大小：\(Int(appState.scheduleAppearance.fontSize))", value: $appState.scheduleAppearance.fontSize, in: 11...16, step: 1)
+            } header: {
+                Text("文字")
+            }
+
+            // 格子内显示
+            Section {
+                Toggle("格子内显示上课时间", isOn: $appState.scheduleAppearance.showStartTime)
+                Toggle("格子内显示上课地点", isOn: $appState.scheduleAppearance.showLocation)
+                Toggle("教室前显示 @", isOn: $appState.scheduleAppearance.showAtSign)
+                Toggle("格子前显示授课老师", isOn: $appState.scheduleAppearance.showTeacher)
+                Toggle("格子内显示备注", isOn: $appState.scheduleAppearance.showExtra)
+            } header: {
+                Text("格子内容")
+            }
+
+            // 格子外观
+            Section {
+                HStack {
+                    Text("圆角半径")
+                    Slider(value: $appState.scheduleAppearance.cornerRadius, in: 0...20, step: 1)
+                    Text("\(Int(appState.scheduleAppearance.cornerRadius))")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 32, alignment: .trailing)
+                }
+                HStack {
+                    Text("格子不透明度")
+                    Slider(value: $appState.scheduleAppearance.blockOpacity, in: 0.3...1.0, step: 0.05)
+                    Text("\(Int(appState.scheduleAppearance.blockOpacity * 100))")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 32, alignment: .trailing)
+                }
+            } header: {
+                Text("格子外观")
+            }
+
+            // 恢复默认
+            Section {
+                Button("恢复默认") {
+                    appState.resetScheduleAppearance()
+                }
+                .foregroundStyle(.red)
+            } footer: {
+                Text("按当前学校 + 学号保存：\(appState.school.displayName) · \(appState.studentId.isEmpty ? "未登录" : appState.studentId)。换学校或换账号，各用各的一套。")
+            }
+        }
+        .navigationTitle("课表设置")
+        .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: appState.scheduleAppearance) { _, _ in
+            appState.saveScheduleAppearance()
+        }
+    }
+
+    /// 预览用的单个示例块（与课表块同款排版）。
+    private func previewBlock(name: String, teacher: String, location: String, time: String, color: Color, appearance: ScheduleAppearance) -> some View {
+        VStack(spacing: 2) {
+            if appearance.showStartTime {
+                Text(time)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(appearance.textColor)
+            }
+            Text(name)
+                .font(.system(size: appearance.fontSize, weight: .bold))
+                .foregroundStyle(appearance.textColor)
+                .lineLimit(4)
+                .multilineTextAlignment(.center)
+            if appearance.showTeacher {
+                Text(teacher)
+                    .font(.system(size: 11))
+                    .foregroundStyle(appearance.textColor)
+                    .lineLimit(1)
+            }
+            if appearance.showLocation {
+                Text("\(appearance.showAtSign ? "@" : "")\(location)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(appearance.textColor)
+                    .lineLimit(3)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .frame(width: 92, height: 110)
+        .background(color.opacity(appearance.blockOpacity), in: RoundedRectangle(cornerRadius: appearance.cornerRadius))
     }
 }

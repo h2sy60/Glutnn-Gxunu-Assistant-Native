@@ -93,6 +93,23 @@ struct MineView: View {
                                 .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 26))
                             }
 
+                            // 课表设置（build 48，参考 WakeUp「课表外观」）
+                            NavigationLink(destination: ScheduleSettingsView()) {
+                                HStack {
+                                    Image(systemName: "calendar.badge.clock")
+                                        .foregroundStyle(.white)
+                                    Text("课表设置")
+                                        .foregroundStyle(.white)
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .foregroundStyle(.white.opacity(0.7))
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 14)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 26))
+                            }
+
                             // 导出日志
                             glassCard {
                                 HStack {
