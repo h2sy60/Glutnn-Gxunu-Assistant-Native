@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit // 仅用于把学生照片 Data 解成 UIImage 再交给 SwiftUI Image 显示。
 import PDFKit // 培养方案 PDF 展示（build 53）。
+import UniformTypeIdentifiers // 备份导入的 .json 文件类型（build 63）。
 
 /// 我的（Flutter 版形态）：壁纸 + 玻璃卡片。
 struct MineView: View {
@@ -114,6 +115,57 @@ struct MineView: View {
                                 .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 26))
                             }
 
+                            // 提醒设置（build 63）：上课提醒 + 考试提醒（本地通知）。
+                            NavigationLink(destination: ReminderSettingsView()) {
+                                HStack {
+                                    Image(systemName: "bell.fill")
+                                        .foregroundStyle(.white)
+                                    Text("提醒设置")
+                                        .foregroundStyle(.white)
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .foregroundStyle(.white.opacity(0.7))
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 14)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 26))
+                            }
+
+                            // 首页设置（build 63）：首页显示开关 + 壁纸。
+                            NavigationLink(destination: HomeSettingsView()) {
+                                HStack {
+                                    Image(systemName: "house.fill")
+                                        .foregroundStyle(.white)
+                                    Text("首页设置")
+                                        .foregroundStyle(.white)
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .foregroundStyle(.white.opacity(0.7))
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 14)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 26))
+                            }
+
+                            // 通用设置（build 63）：自动刷新 + 成绩显示 + 数据管理 + 备份与恢复。
+                            NavigationLink(destination: GeneralSettingsView()) {
+                                HStack {
+                                    Image(systemName: "gearshape.fill")
+                                        .foregroundStyle(.white)
+                                    Text("通用设置")
+                                        .foregroundStyle(.white)
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .foregroundStyle(.white.opacity(0.7))
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 14)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 26))
+                            }
+
                             // 关于（build 49）：作者信息、版本、检测更新、作者 GitHub
                             NavigationLink(destination: AboutView()) {
                                 HStack {
@@ -182,8 +234,15 @@ struct MineView: View {
 /// 课表数据页：时间管理 + 显示调课/补课（旧项目 setting.dart 的
 /// showScheduleChange，默认隐藏）。只桂工有调课接口；打开后下次刷新
 /// 课表会把调课/补课应用上去。
+/// build 63 加：学期设置（开学日期、学期周数）+ 日历同步（自动同步到系统日历）。
 struct ScheduleDataView: View {
     @Environment(AppState.self) private var appState
+    @State private var termStartDate: Date = Date()
+    @State private var totalWeeks: Int = 20
+    @State private var hasTermOverride = false
+    /// 初始加载完成才保存（否则 .task 里填初始值也会触发 onChange，
+    /// 进页就误写一个开学日期覆盖）。
+    @State private var isLoaded = false
 
     var body: some View {
         ZStack {
@@ -205,6 +264,58 @@ struct ScheduleDataView: View {
                         }
                         .padding(.vertical, 2)
                     }
+                }
+                // 学期设置（build 63）：开学日期、学期周数。改了立即影响
+                // 当前周的计算；恢复默认回到学校默认开学日 + 20 周。
+                Section {
+                    DatePicker("开学日期", selection: $termStartDate, displayedComponents: .date)
+                        .onChange(of: termStartDate) { _, newValue in
+                            guard isLoaded else { return }
+                            AppSettings.setTermStartDateOverride(newValue, for: appState.school.id)
+                            hasTermOverride = true
+                            appState.refreshCurrentWeek()
+                        }
+                    Stepper("学期周数：\(totalWeeks) 周", value: $totalWeeks, in: 1...30)
+                        .onChange(of: totalWeeks) { _, newValue in
+                            guard isLoaded else { return }
+                            AppSettings.setTotalWeeks(newValue, for: appState.school.id)
+                            appState.refreshCurrentWeek()
+                        }
+                    if hasTermOverride {
+                        Button("恢复默认开学日期") {
+                            AppSettings.setTermStartDateOverride(nil, for: appState.school.id)
+                            termStartDate = appState.school.termStartDate
+                            hasTermOverride = false
+                            appState.refreshCurrentWeek()
+                        }
+                        .foregroundStyle(.red)
+                    }
+                } header: {
+                    Text("学期设置")
+                } footer: {
+                    Text("开学日期决定当前周的计算；改完后课表和首页的周数立即更新。")
+                }
+                // 日历同步（build 63）：课表刷新后自动同步到系统日历。
+                // 复用手动导出的 CalendarExporter（先删同名日历再建，不会重复）。
+                Section {
+                    Toggle("自动同步到系统日历", isOn: Binding(
+                        get: { AppSettings.autoCalendarSync },
+                        set: { AppSettings.autoCalendarSync = $0 }
+                    ))
+                    if AppSettings.autoCalendarSync {
+                        Picker("同步范围", selection: Binding(
+                            get: { AppSettings.calendarSyncRange },
+                            set: { AppSettings.calendarSyncRange = $0 }
+                        )) {
+                            Text("本学期").tag(0)
+                            Text("本周起").tag(1)
+                        }
+                        .pickerStyle(.segmented)
+                    }
+                } header: {
+                    Text("日历同步")
+                } footer: {
+                    Text("打开后每次刷新课表都会自动同步到系统日历「\(appState.school.displayName) 课表」，不用每次手动导出。")
                 }
                 if appState.school.id == .gut {
                     Section {
@@ -229,6 +340,284 @@ struct ScheduleDataView: View {
         }
         .navigationTitle("课表数据")
         .navigationBarTitleDisplayMode(.inline)
+        .task {
+            termStartDate = appState.school.effectiveTermStartDate
+            totalWeeks = appState.school.effectiveTotalWeeks
+            hasTermOverride = AppSettings.termStartDateOverride(for: appState.school.id) != nil
+            isLoaded = true
+        }
+    }
+}
+
+// MARK: - 提醒设置（build 63）
+
+/// 上课提醒 + 考试提醒（系统本地通知，不走服务器）。
+/// 打开开关时请求通知权限；课表/考试刷新后自动重排提醒；关了就取消。
+struct ReminderSettingsView: View {
+    @Environment(AppState.self) private var appState
+    @State private var permissionDenied = false
+
+    var body: some View {
+        ZStack {
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
+            List {
+                Section {
+                    Toggle("上课提醒", isOn: Binding(
+                        get: { AppSettings.classReminderEnabled },
+                        set: { enabled in
+                            AppSettings.classReminderEnabled = enabled
+                            Task {
+                                if enabled {
+                                    let granted = await ReminderManager.requestPermission()
+                                    if granted {
+                                        await ReminderManager.rescheduleClassReminders(
+                                            courses: appState.courses, school: appState.school,
+                                            leadMinutes: AppSettings.classReminderMinutes)
+                                    } else {
+                                        permissionDenied = true
+                                        AppSettings.classReminderEnabled = false
+                                    }
+                                } else {
+                                    await ReminderManager.cancelClassReminders()
+                                }
+                            }
+                        }
+                    ))
+                    if AppSettings.classReminderEnabled {
+                        Picker("提前提醒", selection: Binding(
+                            get: { AppSettings.classReminderMinutes },
+                            set: { minutes in
+                                AppSettings.classReminderMinutes = minutes
+                                Task {
+                                    await ReminderManager.rescheduleClassReminders(
+                                        courses: appState.courses, school: appState.school,
+                                        leadMinutes: minutes)
+                                }
+                            }
+                        )) {
+                            Text("5 分钟").tag(5)
+                            Text("10 分钟").tag(10)
+                            Text("15 分钟").tag(15)
+                            Text("30 分钟").tag(30)
+                        }
+                    }
+                } header: {
+                    Text("上课提醒")
+                } footer: {
+                    Text("按当前课表排本周和下周的课，上课前提醒。课表刷新后自动重排。")
+                }
+                Section {
+                    Toggle("考试提醒", isOn: Binding(
+                        get: { AppSettings.examReminderEnabled },
+                        set: { enabled in
+                            AppSettings.examReminderEnabled = enabled
+                            Task {
+                                if enabled {
+                                    let granted = await ReminderManager.requestPermission()
+                                    if granted {
+                                        await ReminderManager.rescheduleExamReminders(
+                                            exams: appState.exams,
+                                            leadDays: AppSettings.examReminderDays)
+                                    } else {
+                                        permissionDenied = true
+                                        AppSettings.examReminderEnabled = false
+                                    }
+                                } else {
+                                    await ReminderManager.cancelExamReminders()
+                                }
+                            }
+                        }
+                    ))
+                    if AppSettings.examReminderEnabled {
+                        Picker("提前提醒", selection: Binding(
+                            get: { AppSettings.examReminderDays },
+                            set: { days in
+                                AppSettings.examReminderDays = days
+                                Task {
+                                    await ReminderManager.rescheduleExamReminders(
+                                        exams: appState.exams, leadDays: days)
+                                }
+                            }
+                        )) {
+                            Text("考试当天").tag(0)
+                            Text("提前 1 天").tag(1)
+                            Text("提前 3 天").tag(3)
+                            Text("提前 7 天").tag(7)
+                        }
+                    }
+                } header: {
+                    Text("考试提醒")
+                } footer: {
+                    Text("按待考安排，考试开始前提醒。考试刷新后自动重排。")
+                }
+            }
+            .listStyle(.insetGrouped)
+        }
+        .navigationTitle("提醒设置")
+        .navigationBarTitleDisplayMode(.inline)
+        .alert("通知权限未开启", isPresented: $permissionDenied) {
+            Button("知道了", role: .cancel) {}
+        } message: {
+            Text("去系统设置里打开通知权限，才能收到提醒。")
+        }
+    }
+}
+
+// MARK: - 首页设置（build 63）
+
+/// 首页显示开关 + 壁纸。改完回首页立即生效。
+struct HomeSettingsView: View {
+    var body: some View {
+        ZStack {
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
+            List {
+                Section {
+                    Toggle("显示近期考试", isOn: Binding(
+                        get: { AppSettings.showRecentExams },
+                        set: { AppSettings.showRecentExams = $0 }
+                    ))
+                    Toggle("显示明日课程", isOn: Binding(
+                        get: { AppSettings.showTomorrowCourses },
+                        set: { AppSettings.showTomorrowCourses = $0 }
+                    ))
+                    Toggle("显示问候语", isOn: Binding(
+                        get: { AppSettings.showGreeting },
+                        set: { AppSettings.showGreeting = $0 }
+                    ))
+                } header: {
+                    Text("显示内容")
+                } footer: {
+                    Text("关掉的区块在首页就不显示。")
+                }
+                Section {
+                    Picker("壁纸", selection: Binding(
+                        get: { AppSettings.wallpaper },
+                        set: { AppSettings.wallpaper = $0 }
+                    )) {
+                        Text("校园黄昏").tag(0)
+                        Text("深蓝渐变").tag(1)
+                        Text("墨绿渐变").tag(2)
+                        Text("纯黑").tag(3)
+                    }
+                    .pickerStyle(.inline)
+                } header: {
+                    Text("壁纸")
+                } footer: {
+                    Text("首页和我的页的背景。校园黄昏是原来的照片壁纸，其余是纯色渐变。")
+                }
+            }
+            .listStyle(.insetGrouped)
+        }
+        .navigationTitle("首页设置")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+// MARK: - 通用设置（build 63）
+
+/// 自动刷新 + 成绩显示 + 数据管理 + 备份与恢复。
+struct GeneralSettingsView: View {
+    @Environment(AppState.self) private var appState
+    @State private var showingClearConfirm = false
+    @State private var showingImportPicker = false
+    @State private var backupURL: URL?
+    @State private var showingShare = false
+    @State private var importMessage: String?
+
+    var body: some View {
+        ZStack {
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
+            List {
+                Section {
+                    Toggle("启动时自动刷新课表", isOn: Binding(
+                        get: { AppSettings.autoRefreshOnLaunch },
+                        set: { AppSettings.autoRefreshOnLaunch = $0 }
+                    ))
+                } header: {
+                    Text("启动")
+                } footer: {
+                    Text("默认关。打开后每次启动 app 都会自动刷新一次课表（默认是手动刷新）。")
+                }
+                Section {
+                    Picker("成绩每行显示", selection: Binding(
+                        get: { AppSettings.scoreDisplayMode },
+                        set: { AppSettings.scoreDisplayMode = $0 }
+                    )) {
+                        Text("原始成绩").tag(0)
+                        Text("绩点").tag(1)
+                        Text("数字分").tag(2)
+                    }
+                    .pickerStyle(.segmented)
+                } header: {
+                    Text("成绩显示")
+                }
+                Section {
+                    Button("清除缓存") {
+                        showingClearConfirm = true
+                    }
+                    .foregroundStyle(.red)
+                    Button("重新拉取全部") {
+                        Task { await appState.refreshAll() }
+                        appState.showToast(.loading, "正在重新拉取…")
+                    }
+                } header: {
+                    Text("数据管理")
+                } footer: {
+                    Text("清除缓存会删掉两校的课表缓存和已拉到的成绩、考试（不删账号密码），下次打开需要重新拉取。")
+                }
+                Section {
+                    Button("导出备份") {
+                        backupURL = appState.exportBackup()
+                        if backupURL != nil { showingShare = true }
+                    }
+                    Button("导入备份") {
+                        showingImportPicker = true
+                    }
+                } header: {
+                    Text("备份与恢复")
+                } footer: {
+                    Text("备份包含全部设置和两校缓存课表，不含账号密码。换手机后导入就能恢复设置和课表。")
+                }
+            }
+            .listStyle(.insetGrouped)
+        }
+        .navigationTitle("通用设置")
+        .navigationBarTitleDisplayMode(.inline)
+        .alert("清除缓存？", isPresented: $showingClearConfirm) {
+            Button("取消", role: .cancel) {}
+            Button("清除", role: .destructive) {
+                appState.clearAllCachedData()
+                appState.showToast(.success, "缓存已清除")
+            }
+        } message: {
+            Text("将删掉两校的课表缓存和已拉到的成绩、考试，账号密码不受影响。")
+        }
+        .fileImporter(isPresented: $showingImportPicker, allowedContentTypes: [.json]) { result in
+            switch result {
+            case .success(let url):
+                let ok = appState.importBackup(from: url)
+                importMessage = ok ? "备份已恢复" : "导入失败：文件格式不对"
+            case .failure:
+                importMessage = "导入失败：打不开这个文件"
+            }
+        }
+        .alert(importMessage ?? "", isPresented: Binding(
+            get: { importMessage != nil },
+            set: { if !$0 { importMessage = nil } }
+        )) {
+            Button("知道了", role: .cancel) {}
+        }
+        .sheet(isPresented: $showingShare) {
+            if let backupURL {
+                ShareLink(item: backupURL) {
+                    Label("分享备份文件", systemImage: "square.and.arrow.up")
+                }
+                .presentationDetents([.medium])
+            }
+        }
     }
 }
 
@@ -441,7 +830,8 @@ struct ScoreView: View {
                                         .foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                Text(s.rawScore)
+                                // build 63 通用设置：成绩每行显示什么（原始成绩/绩点/数字分）。
+                                Text(scoreRowText(s))
                                     .font(.headline)
                                     .foregroundStyle(s.score < 60 && s.score > 0 ? .red : .primary)
                             }
