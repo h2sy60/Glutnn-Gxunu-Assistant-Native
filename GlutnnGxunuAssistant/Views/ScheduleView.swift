@@ -6,12 +6,15 @@ import SwiftUI
 //      “2026-11-18📍”玻璃药丸；点标题或日期都回到当前周。没有左右箭头，没有日期范围。
 // 周 strip：只有星期字（一 二 三 四 五 六 日），当天是黑色圆角 pill；
 //      showDayByWeekDay 默认 false，所以不显示日期数字。
-// 网格区：顶栏 + strip 固定在上，TabView（左右划切周）占满剩余高度，
-//      每页里一个纵向 ScrollView 装 11 节网格（下滑看 10-11 节）。
+// 网格区：顶栏 + strip 固定在上，GeometryReader 量出剩余高度，TabView（左右划切周）
+//      拿明确高度填满它；每页里一个纵向 ScrollView 装 11 节网格（下滑看 10-11 节）。
 //      行高按网格区可用高度算：（可用高 − 85）/ 除数，夹在 50–92；
 //      桂工除数 8.2（首屏 9 节）、职师院 9.2（首屏 10 节）。
-// build 21/22 的错：顶栏用了居中“第 X 周 + 日期范围 + 箭头”，
-// strip 硬加了日期数字，而且 TabView 嵌套 ScrollView 的方式让日期条掉到屏幕中间。
+// 下坠教训（build 21/22/23 都栽在这）：GeometryReader 绝对不能放在 TabView 的页面里。
+//      苹果文档只说 GeometryReader“返回一个灵活的首选尺寸”，TabView / PageTabViewStyle
+//      两页根本没写尺寸规则（2026-11-18 核实过）。实测：GeometryReader 在页面里时，
+//      TabView 拿不到确定的高度，整个页就掉下去、顶栏和星期条之间出现大白空隙。
+//      正确做法：GeometryReader 包在 TabView 外面（量剩余高度），TabView 给明确 frame 高度。
 
 struct ScheduleView: View {
     @Environment(AppState.self) private var appState
@@ -106,33 +109,42 @@ struct ScheduleView: View {
                 .padding(.top, 4)
                 .padding(.bottom, 10)
 
-            // 网格区：TabView 占满剩余高度，左右划切周；每页里纵向滑看 10-11 节。
-            if appState.scheduleLoading && appState.courses.isEmpty {
-                Spacer()
-                ProgressView("正在拉取课表…")
-                Spacer()
-            } else if weekCourses.isEmpty {
-                Spacer()
-                VStack(spacing: 12) {
-                    Image(systemName: "calendar.badge.exclamationmark")
-                        .font(.largeTitle)
-                        .foregroundStyle(.black.opacity(0.4))
-                    Text(appState.scheduleError ?? "本周没有课程")
-                        .font(.subheadline)
-                        .foregroundStyle(.black.opacity(0.7))
-                        .multilineTextAlignment(.center)
-                    Button("重新拉取") {
-                        Task { await appState.refreshSchedule() }
+            // 网格区：GeometryReader 包在 TabView 外面，量出顶栏 + strip 之下的剩余高度；
+            // TabView 拿这个明确高度填满它。GeometryReader 绝不能放进 TabView 的页面里
+            //（会让 TabView 拿不到确定高度，整页掉下去——build 21/22/23 的下坠就是这么来的）。
+            GeometryReader { geo in
+                let gridH = geo.size.height
+                let rh = rowHeight(for: gridH)
+                if appState.scheduleLoading && appState.courses.isEmpty {
+                    VStack {
+                        Spacer()
+                        ProgressView("正在拉取课表…")
+                        Spacer()
                     }
-                    .buttonStyle(.bordered)
-                }
-                .padding()
-                Spacer()
-            } else {
-                TabView(selection: $displayWeek) {
-                    ForEach(1...20, id: \.self) { w in
-                        GeometryReader { geo in
-                            let rh = rowHeight(for: geo.size.height)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if weekCourses.isEmpty {
+                    VStack {
+                        Spacer()
+                        VStack(spacing: 12) {
+                            Image(systemName: "calendar.badge.exclamationmark")
+                                .font(.largeTitle)
+                                .foregroundStyle(.black.opacity(0.4))
+                            Text(appState.scheduleError ?? "本周没有课程")
+                                .font(.subheadline)
+                                .foregroundStyle(.black.opacity(0.7))
+                                .multilineTextAlignment(.center)
+                            Button("重新拉取") {
+                                Task { await appState.refreshSchedule() }
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                        .padding()
+                        Spacer()
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    TabView(selection: $displayWeek) {
+                        ForEach(1...20, id: \.self) { w in
                             ScrollView(.vertical, showsIndicators: false) {
                                 ScheduleGrid(
                                     courses: appState.courses.filter { $0.weeks.contains(w) },
@@ -148,11 +160,12 @@ struct ScheduleView: View {
                                     await appState.refreshSchedule()
                                 }
                             }
+                            .tag(w)
                         }
-                        .tag(w)
                     }
+                    .tabViewStyle(.page(indexDisplayMode: .never))
+                    .frame(height: gridH)
                 }
-                .tabViewStyle(.page(indexDisplayMode: .never))
             }
         }
         .background(Color.white)
