@@ -559,13 +559,36 @@ final class AppState {
         }
     }
 
-    /// 静默重登（职师院，拉课表/成绩时会话过期用）：串行，同一时间只登一次。
+    /// 职师院会话过期后的重登（刷新/成绩共用）：
+    /// 空验证码登，最多试两次——正方服务器是概率性要验证码，第一次说要
+    /// 不等于真要输码，再试一次常常直接通过（Russell 2026-11-18 13:30：
+    /// 点“需要验证”又直接通过，就是第一次撞上概率验证码、第二次没要）。
+    /// 两次都要求验证码，才直接弹验证码弹窗让他输码，不经过“需要验证”
+    /// 提示条；账号/密码错才返回 false（调用方记错误/回整页登录）。
     /// 返回 true = 重登成功，会话已恢复。
-    private func silentReloginGXVNU() async -> Bool {
-        guard let outcome = await performLogin(captcha: "") else { return false }
-        if case .success = outcome {
-            isLoggedIn = true
-            return true
+    private func reloginGXVNU() async -> Bool {
+        var needsCaptcha = false
+        for _ in 0..<2 {
+            guard let outcome = await performLogin(captcha: "") else { return false }
+            switch outcome {
+            case .success:
+                isLoggedIn = true
+                return true
+            case .captchaRequired:
+                needsCaptcha = true
+                continue
+            case .failure:
+                return false
+            }
+        }
+        // 两次都要验证码：直接弹弹窗，不经过“需要验证”。
+        if needsCaptcha {
+            await fetchCaptcha()
+            if captchaImageData != nil {
+                captchaDialogText = ""
+                captchaChecking = false
+                showCaptchaDialog = true
+            }
         }
         return false
     }
@@ -709,8 +732,9 @@ final class AppState {
                 if school.id == .gut {
                     scheduleError = "登录已过期，请重新登录"
                 } else {
-                    // 静默重登（串行，防并发顶掉会话报“账号密码不正确”）。
-                    if await silentReloginGXVNU() {
+                    // 职师院重登（reloginGXVNU：空验证码登，最多试两次；
+                    // 两次都要验证码才直接弹验证码弹窗，不经过“需要验证”）。
+                    if await reloginGXVNU() {
                         do {
                             let list = try await GXVNUService.fetchSchedule(year: year, semester: semester)
                             if let name = GXVNUService.lastStudentName, !name.isEmpty {
@@ -760,8 +784,8 @@ final class AppState {
                 if school.id == .gut {
                     scoresError = "登录已过期，请重新登录"
                 } else {
-                    // 静默重登（串行，防并发顶掉会话报“账号密码不正确”）。
-                    if await silentReloginGXVNU() {
+                    // 职师院重登（reloginGXVNU：同 refreshSchedule）。
+                    if await reloginGXVNU() {
                         do {
                             let list = try await GXVNUService.fetchScores(year: year)
                             scores = list
