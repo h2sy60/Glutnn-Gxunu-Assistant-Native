@@ -558,10 +558,10 @@ struct ScheduleGrid: View {
                         .font(.system(size: 13, weight: .bold))
                         .foregroundStyle(.black.opacity(0.85))
                     if appearance.showSectionTime {
-                        Text(timeText(school.startTimeList[s]))
+                        Text(timeText(school.effectiveStartTimeList[s]))
                             .font(.system(size: 9))
                             .foregroundStyle(.black.opacity(0.45))
-                        Text(timeText(school.endTimeList[s]))
+                        Text(timeText(school.effectiveEndTimeList[s]))
                             .font(.system(size: 9))
                             .foregroundStyle(.black.opacity(0.45))
                     }
@@ -590,7 +590,7 @@ struct ScheduleGrid: View {
                     VStack(alignment: appearance.textHorizontalCenter ? .center : .leading, spacing: 2) {
                         if appearance.textVerticalCenter { Spacer() }
                         if appearance.showStartTime {
-                            Text(timeText(school.startTimeList[block.start - 1]))
+                            Text(timeText(school.effectiveStartTimeList[block.start - 1]))
                                 .font(.system(size: 11, weight: .semibold))
                                 .foregroundStyle(text)
                         }
@@ -684,10 +684,10 @@ struct CourseDetailPopup: View {
     /// 上课时钟范围（第 start 节开始时间 – 第 end 节结束时间）。
     private var timeRange: String {
         guard startSection >= 1, endSection >= startSection,
-              startSection <= school.startTimeList.count,
-              endSection <= school.endTimeList.count else { return "—" }
-        let s = school.startTimeList[startSection - 1]
-        let e = school.endTimeList[endSection - 1]
+              startSection <= school.effectiveStartTimeList.count,
+              endSection <= school.effectiveEndTimeList.count else { return "—" }
+        let s = school.effectiveStartTimeList[startSection - 1]
+        let e = school.effectiveEndTimeList[endSection - 1]
         return String(format: "%02d:%02d - %02d:%02d", s.0, s.1, e.0, e.1)
     }
 
@@ -808,8 +808,8 @@ struct CalendarExporter {
             value: (week - 1) * 7 + (course.weekday - 1),
             to: school.termStartDate
         ) else { return nil }
-        let (sh, sm) = school.startTimeList[course.startSection - 1]
-        let (eh, em) = school.endTimeList[course.endSection - 1]
+        let (sh, sm) = school.effectiveStartTimeList[course.startSection - 1]
+        let (eh, em) = school.effectiveEndTimeList[course.endSection - 1]
         guard let start = cal.date(bySettingHour: sh, minute: sm, second: 0, of: day),
               let end = cal.date(bySettingHour: eh, minute: em, second: 0, of: day)
         else { return nil }
