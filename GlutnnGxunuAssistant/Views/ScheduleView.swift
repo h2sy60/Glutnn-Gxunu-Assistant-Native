@@ -31,11 +31,22 @@ import SwiftUI
 //      不要再往这个文件里加回 VStack + ScrollView 兄弟结构，
 //      也不要再加 GeometryReader / TabView / NavigationStack——
 //      那 8 个版本已经证明那条路走不通。
+// build 30（2026-11-18 10:21 Russell：29 下坠修好了，但左右切换动画没了、上下也滑不动）：
+//      两个回归的病根都是 build 29 的 .highPriorityGesture(DragGesture)：
+//      它把所有拖动都抢走了，ScrollView 收不到纵向滑动；
+//      周一切换又是 .id(week) 整个重建 ScrollView 的瞬间替换，没有过渡动画。
+//      修法：(1) .highPriorityGesture → .simultaneousGesture，
+//      纵向归 ScrollView、横向归切周手势，两边都不抢；
+//      (2) .id(week) 从 ScrollView 移到网格上，只换网格（顶栏不动），
+//      加方向滑动过渡（下一周从右进、上一周从左进），切周包 withAnimation；
+//      (3) ScrollViewReader + onChange(of: week) 切周后回到顶部。
 
 struct ScheduleView: View {
     @Environment(AppState.self) private var appState
     @State private var displayWeek: Int = 0
     @State private var showExportSoon = false
+    /// 切周滑动方向：1 = 下一周（新网格从右滑入），-1 = 上一周（从左滑入）。
+    @State private var weekDirection: CGFloat = 1
 
     private var week: Int { displayWeek == 0 ? appState.currentWeek : displayWeek }
     private var isCurrentWeek: Bool { week == appState.currentWeek }
@@ -59,9 +70,14 @@ struct ScheduleView: View {
         return "\(cal.component(.year, from: now))-\(cal.component(.month, from: now))-\(cal.component(.day, from: now))"
     }
 
-    /// 回到当前周（原版点标题/日期都回到当前周）。
+    /// 回到当前周（原版点标题/日期都回到当前周），带滑动方向动画。
     private func backToCurrentWeek() {
-        displayWeek = appState.currentWeek
+        let target = appState.currentWeek
+        guard target != week else { return }
+        weekDirection = target > week ? 1 : -1
+        withAnimation(.easeInOut(duration: 0.3)) {
+            displayWeek = target
+        }
     }
 
     /// 横滑切周：只有横向滑动明显大于纵向、且横向超过 60pt 时才切周；
@@ -73,9 +89,15 @@ struct ScheduleView: View {
                 let dy = value.translation.height
                 guard abs(dx) > abs(dy), abs(dx) > 60 else { return }
                 if dx < 0 {
-                    displayWeek = min(20, week + 1)
+                    weekDirection = 1
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        displayWeek = min(20, week + 1)
+                    }
                 } else {
-                    displayWeek = max(1, week - 1)
+                    weekDirection = -1
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        displayWeek = max(1, week - 1)
+                    }
                 }
             }
     }
@@ -148,50 +170,62 @@ struct ScheduleView: View {
     }
 
     var body: some View {
-        ScrollView(.vertical, showsIndicators: false) {
-            LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
-                Section {
-                    if appState.scheduleLoading && appState.courses.isEmpty {
-                        VStack(spacing: 12) {
-                            ProgressView("正在拉取课表…")
-                        }
-                        .frame(maxWidth: .infinity, minHeight: 300)
-                    } else if weekCourses.isEmpty {
-                        VStack(spacing: 12) {
-                            Image(systemName: "calendar.badge.exclamationmark")
-                                .font(.largeTitle)
-                                .foregroundStyle(.black.opacity(0.4))
-                            Text(appState.scheduleError ?? "本周没有课程")
-                                .font(.subheadline)
-                                .foregroundStyle(.black.opacity(0.7))
-                                .multilineTextAlignment(.center)
-                            Button("重新拉取") {
-                                Task { await appState.refreshSchedule() }
+        ScrollViewReader { proxy in
+            ScrollView(.vertical, showsIndicators: false) {
+                LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                    Section {
+                        if appState.scheduleLoading && appState.courses.isEmpty {
+                            VStack(spacing: 12) {
+                                ProgressView("正在拉取课表…")
                             }
-                            .buttonStyle(.bordered)
+                            .frame(maxWidth: .infinity, minHeight: 300)
+                        } else if weekCourses.isEmpty {
+                            VStack(spacing: 12) {
+                                Image(systemName: "calendar.badge.exclamationmark")
+                                    .font(.largeTitle)
+                                    .foregroundStyle(.black.opacity(0.4))
+                                Text(appState.scheduleError ?? "本周没有课程")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.black.opacity(0.7))
+                                    .multilineTextAlignment(.center)
+                                Button("重新拉取") {
+                                    Task { await appState.refreshSchedule() }
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 300)
+                            .padding()
+                        } else {
+                            ScheduleGrid(
+                                courses: weekCourses,
+                                school: appState.school,
+                                rowHeight: rowHeightValue
+                            )
+                            .padding(.bottom, bottomClearance)
+                            // 周一切换时只换网格（顶栏不动），带方向滑动动画。
+                            .id(week)
+                            .transition(.asymmetric(
+                                insertion: .move(edge: weekDirection > 0 ? .trailing : .leading),
+                                removal: .move(edge: weekDirection > 0 ? .leading : .trailing)
+                            ))
                         }
-                        .frame(maxWidth: .infinity, minHeight: 300)
-                        .padding()
-                    } else {
-                        ScheduleGrid(
-                            courses: weekCourses,
-                            school: appState.school,
-                            rowHeight: rowHeightValue
-                        )
-                        .padding(.bottom, bottomClearance)
+                    } header: {
+                        headerView
                     }
-                } header: {
-                    headerView
                 }
             }
-        }
-        .id(week)
-        .background(Color.white)
-        .contentMargins(.top, 0, for: .scrollContent)
-        .highPriorityGesture(swipeGesture)
-        .onAppear { displayWeek = appState.currentWeek }
-        .alert("导出功能即将上线", isPresented: $showExportSoon) {
-            Button("知道了", role: .cancel) {}
+            .background(Color.white)
+            .contentMargins(.top, 0, for: .scrollContent)
+            // 同时手势：纵向滑动归 ScrollView，横向滑动归切周手势，两边都不抢。
+            // （build 29 用 .highPriorityGesture 会把所有拖动都抢走，导致上下滑不动。）
+            .simultaneousGesture(swipeGesture)
+            .onAppear { displayWeek = appState.currentWeek }
+            .onChange(of: week) { _, newWeek in
+                proxy.scrollTo(newWeek, anchor: .top)
+            }
+            .alert("导出功能即将上线", isPresented: $showExportSoon) {
+                Button("知道了", role: .cancel) {}
+            }
         }
     }
 }
