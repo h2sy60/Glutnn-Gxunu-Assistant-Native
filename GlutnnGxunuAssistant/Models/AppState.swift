@@ -366,6 +366,12 @@ final class AppState {
     /// 切学校：换配置、清登录态和验证码。已输的学号密码按学校保存，回来接着用（Flutter _switchSchool 同款）。
     /// Cookie 按 host 分桶，不用清。
     ///
+    /// 防连点锁（build 39：快速连点两所学校多次会闪退）：
+    /// build 37 的两阶段仍有竞态——连点时多个派生状态 Task 交错改
+    /// school/courses/currentWeek。切换中再点直接忽略，Task 完再解锁。
+    /// 切换本身只有一个 Task 周期，锁只占一瞬间，不影响正常点按。
+    private var isSwitchingSchool = false
+
     /// 分两阶段（build 37：登录页里切学校闪退的修法）：
     /// 同步只换 school + 恢复新学校账号；isLoggedIn / 课表缓存 / 学期周等
     /// 派生状态放 Task 里下一拍再更新。原来一拍里同时改 school、isLoggedIn、
@@ -374,6 +380,8 @@ final class AppState {
     /// 派生状态下一拍再跟上。
     func switchSchool(_ newSchool: SchoolConfig) {
         guard newSchool.id != school.id else { return }
+        guard !isSwitchingSchool else { return }
+        isSwitchingSchool = true
         // 先把当前学校的输入存下来（哪怕还没登录成功，下次回来也能接着输）。
         if !studentId.isEmpty {
             CredentialsStore.save(schoolId: school.id, studentId: studentId, password: password)
@@ -406,6 +414,7 @@ final class AppState {
             captchaText = ""
             showCaptcha = false
             updateTermFromDate()
+            isSwitchingSchool = false
         }
     }
 

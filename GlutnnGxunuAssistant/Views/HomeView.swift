@@ -121,7 +121,11 @@ struct HomeView: View {
     /// 某一节的状态（原版 lists.dart timeUntilNextClass + timeText 同款口径）。
     /// 返回右边的文字与状态：before = 还没上，after = 已开始（含已结束）。
     /// 文案：已结束 / X分后下课 / X分后上课 / X小时后 / ""（4 小时开外不显示）。
-    private func sectionStatus(section: Int) -> (text: String, state: String) {
+    /// dayOffset：0 = 今天，1 = 明天。明天的课还没发生，直接返回 before，
+    /// 不拿今天的时间去比——不然明天的第 1–5 节（12:00 前结束）按今天
+    /// 14:48 算全是“已结束”，全打勾（Russell 2026-11-18 14:48）。
+    private func sectionStatus(section: Int, dayOffset: Int = 0) -> (text: String, state: String) {
+        if dayOffset > 0 { return ("", "before") }
         let cal = Calendar(identifier: .gregorian)
         let now = Date()
         let nowMin = cal.component(.hour, from: now) * 60 + cal.component(.minute, from: now)
@@ -157,16 +161,16 @@ struct HomeView: View {
 
     /// 某节的图标与颜色（原版 lists.dart icon/timeColor 同款）：
     /// 未上 = 计时器白字，正在上 = 羽毛笔主题蓝，已结束 = 对勾白 70%。
-    private func sectionIcon(section: Int) -> (name: String, color: Color) {
-        let (text, state) = sectionStatus(section: section)
+    private func sectionIcon(section: Int, dayOffset: Int = 0) -> (name: String, color: Color) {
+        let (text, state) = sectionStatus(section: section, dayOffset: dayOffset)
         if state == "before" { return ("timer", .white) }
         if text.contains("下课") { return ("pencil", .blue) }
         return ("checkmark", Color.white.opacity(0.7))
     }
 
     /// 行文字颜色（和图标同一口径）。
-    private func sectionTextColor(section: Int) -> Color {
-        let (text, state) = sectionStatus(section: section)
+    private func sectionTextColor(section: Int, dayOffset: Int = 0) -> Color {
+        let (text, state) = sectionStatus(section: section, dayOffset: dayOffset)
         if state == "before" { return .white }
         if text.contains("下课") { return .blue }
         return Color.white.opacity(0.7)
@@ -216,9 +220,9 @@ struct HomeView: View {
 
     /// 今天/明天课程行（原版 lists.dart _TodayCourseListItem 同款）：
     /// 左图标 + 两行白字（第一行“教室 课名”，第二行“第X节 | 老师”）+ 右边状态文案。
-    private func sectionRow(_ daySection: DaySection, statusText: String) -> some View {
-        let (iconName, iconColor) = sectionIcon(section: daySection.section)
-        let textColor = sectionTextColor(section: daySection.section)
+    private func sectionRow(_ daySection: DaySection, statusText: String, dayOffset: Int = 0) -> some View {
+        let (iconName, iconColor) = sectionIcon(section: daySection.section, dayOffset: dayOffset)
+        let textColor = sectionTextColor(section: daySection.section, dayOffset: dayOffset)
         let location = daySection.course.location
             .replacingOccurrences(of: "未知", with: "")
             .trimmingCharacters(in: .whitespaces)
@@ -460,7 +464,7 @@ struct HomeView: View {
                     } else {
                         VStack(spacing: 0) {
                             ForEach(tomorrowSections) { daySection in
-                                sectionRow(daySection, statusText: "")
+                                sectionRow(daySection, statusText: "", dayOffset: 1)
                                 if daySection.id != tomorrowSections.last?.id {
                                     Divider().background(Color.white.opacity(0.15))
                                 }

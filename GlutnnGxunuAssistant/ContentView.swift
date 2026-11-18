@@ -85,6 +85,9 @@ struct CaptchaDialogView: View {
                     .padding(.horizontal, 24)
                     .padding(.top, 8)
 
+                // 验证码输入框（build 39 重设计）：整个输入行做成一个玻璃框，
+                // 图标 + 输入框 + 验证码图都在框里，图在框内右侧、不贴弹窗边
+                // （Russell 2026-11-18 14:48：之前图太靠右、快出去了）。
                 HStack(spacing: 12) {
                     Image(systemName: "wand.and.stars")
                         .font(.system(size: 20))
@@ -98,7 +101,6 @@ struct CaptchaDialogView: View {
                     .autocorrectionDisabled()
                     .focused($captchaFocused)
                     .foregroundStyle(.black)
-                    Spacer()
                     if let data = appState.captchaImageData,
                        let uiImage = UIImage(data: data) {
                         Image(uiImage: uiImage)
@@ -119,32 +121,40 @@ struct CaptchaDialogView: View {
                             }
                     }
                 }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .glassEffect(.regular.tint(.white.opacity(0.5)), in: RoundedRectangle(cornerRadius: 12))
                 .padding(.horizontal, 24)
                 .padding(.top, 16)
 
-                Divider()
-                    .padding(.horizontal, 24)
-                    .padding(.top, 16)
-
-                HStack {
-                    Spacer()
-                    if !appState.captchaChecking {
-                        Button("取消") {
+                // 取消 / 继续（build 39 重设计）：两个等宽液态玻璃胶囊并排，
+                // 不再是贴右的蓝色文字——之前“继续”贴右沿、快出弹窗了。
+                // 胶囊比弹窗底色略实（白 0.5 对 0.35），看得出是两个钮。
+                HStack(spacing: 12) {
+                    Button("取消") {
+                        if !appState.captchaChecking {
                             appState.showCaptchaDialog = false
                         }
-                        .font(.system(size: 16))
-                        .foregroundStyle(.blue)
-                        .padding(.trailing, 24)
                     }
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.black)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 44)
+                    .glassEffect(.regular.tint(.white.opacity(0.5)), in: Capsule())
+
                     Button(appState.captchaChecking ? "稍等..." : "继续") {
                         Task { await appState.confirmCaptchaDialog() }
                     }
-                    .font(.system(size: 16))
+                    .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(.blue)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 44)
+                    .glassEffect(.regular.tint(.white.opacity(0.5)), in: Capsule())
                     .disabled(appState.captchaChecking)
                 }
-                .padding(.top, 12)
-                .padding(.bottom, 16)
+                .padding(.horizontal, 24)
+                .padding(.top, 16)
+                .padding(.bottom, 20)
             }
             // 原生液态玻璃（build 38：原来是纯白 Color.white，Russell 2026-11-18
             // 13:30 问为什么重构了还不用原生液态玻璃——build 31 照 Flutter 原版
@@ -195,13 +205,13 @@ struct ToastPill: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
         }
-        .glassEffect(.regular.tint(.white.opacity(0.35)), in: RoundedRectangle(cornerRadius: 25))
+        .glassEffect(.regular.tint(.white.opacity(0.25)), in: RoundedRectangle(cornerRadius: 25))
         // 原版提示条永远是浅色玻璃 + 深色字（哪怕在深色壁纸首页上也是）。
         // 玻璃材质只认窗口 trait，不认 .preferredColorScheme（build 33 实测：
         // 首页窗口是深色，光加 .preferredColorScheme(.light) 玻璃还是深灰，
         // 黑字就看不清了）。所以直接给玻璃加白 tint，强制白色玻璃，黑字可读。
         // 白 tint 别太高：0.75 像块不透光的白板，Russell 2026-11-18 13:09
-        // 说不透明度太高看着难受；0.35 够透、还是浅色玻璃，黑字照样可读。
+        // 说不透明度太高看着难受；0.35 他 14:48 又说不够透，再降到 0.25。
     }
 }
 
