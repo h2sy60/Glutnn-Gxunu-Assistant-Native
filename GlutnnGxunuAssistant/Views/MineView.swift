@@ -78,12 +78,13 @@ struct MineView: View {
                                 }
                             }
 
-                            // 课表设置（build 48，参考 WakeUp「课表外观」）
+                            // 课表外观（build 48，参考 WakeUp「课表外观」；build 62 改名，
+                            // 原名“课表设置”）
                             NavigationLink(destination: ScheduleSettingsView()) {
                                 HStack {
                                     Image(systemName: "calendar.badge.clock")
                                         .foregroundStyle(.white)
-                                    Text("课表设置")
+                                    Text("课表外观")
                                         .foregroundStyle(.white)
                                     Spacer()
                                     Image(systemName: "chevron.right")
@@ -95,12 +96,13 @@ struct MineView: View {
                                 .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 26))
                             }
 
-                            // 时间管理（build 60，旧项目 TimeManagePage）：改每节上下课时间，两校都有。
-                            NavigationLink(destination: TimeManageView()) {
+                            // 课表数据（build 62）：时间管理 + 显示调课/补课都收进这里，
+                            // 不再直接摆在“我的”页。
+                            NavigationLink(destination: ScheduleDataView()) {
                                 HStack {
-                                    Image(systemName: "clock.fill")
+                                    Image(systemName: "list.bullet.rectangle")
                                         .foregroundStyle(.white)
-                                    Text("时间管理")
+                                    Text("课表数据")
                                         .foregroundStyle(.white)
                                     Spacer()
                                     Image(systemName: "chevron.right")
@@ -110,26 +112,6 @@ struct MineView: View {
                                 .padding(.vertical, 14)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 26))
-                            }
-
-                            // 显示调课/补课（build 60，旧项目 setting.dart showScheduleChange，
-                            // 默认隐藏）。只桂工有调课接口；打开后下次刷新课表会把调课/补课
-                            // 应用上去（旧项目改完提示“记得刷新一下课表噢!”）。
-                            if appState.school.id == .gut {
-                                glassCard {
-                                    HStack {
-                                        Image(systemName: "arrow.triangle.2.circlepath")
-                                            .foregroundStyle(.white)
-                                        Text("显示调课/补课")
-                                            .foregroundStyle(.white)
-                                        Spacer()
-                                        Toggle("", isOn: Binding(
-                                            get: { GUTService.showScheduleChange },
-                                            set: { GUTService.showScheduleChange = $0 }
-                                        ))
-                                        .labelsHidden()
-                                    }
-                                }
                             }
 
                             // 关于（build 49）：作者信息、版本、检测更新、作者 GitHub
@@ -194,6 +176,61 @@ struct MineView: View {
 }
 
 // MARK: - 成绩页：列表 + 平均绩点/平均分（与 Flutter 版口径一致）
+
+// MARK: - 课表数据（build 62）
+
+/// 课表数据页：时间管理 + 显示调课/补课（旧项目 setting.dart 的
+/// showScheduleChange，默认隐藏）。只桂工有调课接口；打开后下次刷新
+/// 课表会把调课/补课应用上去。
+struct ScheduleDataView: View {
+    @Environment(AppState.self) private var appState
+
+    var body: some View {
+        ZStack {
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
+            List {
+                Section {
+                    NavigationLink(destination: TimeManageView()) {
+                        HStack(spacing: 12) {
+                            Image(systemName: "clock.fill")
+                                .foregroundStyle(.secondary)
+                                .frame(width: 24)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("时间管理")
+                                Text("改每节上下课时间")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+                if appState.school.id == .gut {
+                    Section {
+                        HStack {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .foregroundStyle(.secondary)
+                                .frame(width: 24)
+                            Text("显示调课/补课")
+                            Spacer()
+                            Toggle("", isOn: Binding(
+                                get: { GUTService.showScheduleChange },
+                                set: { GUTService.showScheduleChange = $0 }
+                            ))
+                            .labelsHidden()
+                        }
+                    } footer: {
+                        Text("打开后下次刷新课表会把调课/补课应用上去。")
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
+        }
+        .navigationTitle("课表数据")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
 
 // MARK: - 时间管理（build 60，旧项目 TimeManagePage）
 
@@ -532,10 +569,10 @@ struct ExamsView: View {
     }
 }
 
-// MARK: - 关于页（build 49）：作者信息、版本、检测更新、作者 GitHub
+// MARK: - 关于页（build 49）：作者信息、版本、检测更新、本项目链接
 //
-// “我的”页 → 关于：显示作者（Russell / h2sy60，点按跳作者 GitHub
-// 主页）、当前版本、检测更新（查 GitHub 最新 Release，比对版本号，
+// “我的”页 → 关于：显示作者（Russell / h2sy60，点按跳本项目仓库，
+// build 62 原来是作者 GitHub 主页）、当前版本、检测更新（查 GitHub 最新 Release，比对版本号，
 // 有新版弹提示去下载，没有就提示已是最新）。
 
 struct AboutView: View {
@@ -560,8 +597,8 @@ struct AboutView: View {
         Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—"
     }
 
-    /// 作者 GitHub 主页。
-    private static let authorGitHubURL = URL(string: "https://github.com/h2sy60")!
+    /// 本项目仓库（build 62：作者行改跳本项目链接，原来是作者 GitHub 主页）。
+    private static let projectURL = URL(string: "https://github.com/h2sy60/Glutnn-Gxunu-Assistant-Native")!
     /// 仓库 Releases 页（检测更新没取到 html_url 时的兜底）。
     private static let releasesURL = URL(string: "https://github.com/h2sy60/Glutnn-Gxunu-Assistant-Native/releases")!
 
@@ -584,16 +621,16 @@ struct AboutView: View {
                         }
                     }
 
-                    // 作者：点按跳作者 GitHub 主页
+                    // 作者：点按跳本项目仓库（build 62，原来是作者 GitHub 主页）
                     Button {
-                        openURL(Self.authorGitHubURL)
+                        openURL(Self.projectURL)
                     } label: {
                         HStack {
                             Image(systemName: "person.crop.circle")
                                 .foregroundStyle(.secondary)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Russell")
-                                Text("作者 · h2sy60")
+                                Text("本项目 · GitHub")
                                     .font(.subheadline)
                                     .foregroundStyle(.secondary)
                             }
