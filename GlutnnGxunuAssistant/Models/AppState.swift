@@ -588,6 +588,10 @@ final class AppState {
             loginError = nil
             showCaptcha = false
             captchaText = ""
+            // 直接关登录页：切换账号时 isLoggedIn 本来就是 true，LoginView 的
+            // onChange 不会触发（true→true 无变化），不靠它关页。
+            // 启动静默登录时登录页本来就没开，置 false 是空操作。
+            showLoginSheet = false
             await refreshSchedule()
         case .failure(let message):
             AppLogger.shared.log("login \(school.id) failure: \(message)")
@@ -604,38 +608,16 @@ final class AppState {
         }
     }
 
-    /// 切换账号（我的页“更换账号”）：只清本校已存账号 + 本校课表缓存，
-    /// 回到未登录态，并直接打开登录页让用户输新账号。
-    /// （旧 logout 只清状态不开登录页，点完像没反应——就是 Russell 说的“坏了”。
-    /// 另外旧 logout 用 clearAll 会连另一所学校的账号一起清掉。）
-    ///
-    /// 顺序是关键（build 32 的教训：先清完再弹页，闪退）：
-    /// 先把轻量字段清掉（学号/密码/名字/报错——登录页打开就是空表单），
-    /// 再弹登录页；课表/成绩/缓存/Cookie 这些会触发大面积重渲染和共享
-    /// 状态改动的，等登录页盖住屏幕后再清。弹页和清数据不再挤在同一拍里。
+    /// 切换账号（我的页“更换账号”）：只打开登录页，什么都不清。
+    /// Russell 2026-11-18 12:26 定：不要清账号密码，留着，他自己会在登录页删。
+    /// 登录页的学号/密码框直接绑 appState，旧账号已预填，他删了重输即可。
+    /// 登录成功后 login() 会覆盖保存新账号、自动刷新课表替换旧数据；
+    /// 取消切换则一切不变。
+    /// build 33 的闪退就是清数据惹的：同步清学号/密码/isLoggedIn + Task 清
+    /// 凭据/缓存/课表/成绩/Cookie，跟弹页和登录页的预填抢状态。什么都不清，
+    /// 就没东西可抢。不要再加回任何清理——这是 Russell 的决定。
     func switchAccount() {
-        isLoggedIn = false
-        studentId = ""
-        password = ""
-        studentName = ""
-        loginError = nil
-        captchaImageData = nil
-        captchaText = ""
-        captchaDialogText = ""
-        showCaptcha = false
-        showCaptchaDialog = false
-        // 先弹登录页（这时 App 状态还是稳定的）。
         showLoginSheet = true
-        // 再清重数据（登录页盖着，看不到下面的重渲染）。
-        Task { @MainActor in
-            CredentialsStore.clear(schoolId: school.id)
-            ScheduleStore.clear(schoolId: school.id)
-            courses = []
-            scores = []
-            scoresError = nil
-            scheduleError = nil
-            NetworkClient.shared.cookies.clearAll()
-        }
     }
 
     func logout() {
