@@ -75,6 +75,12 @@ import EventKit // 导出到日历（EventKit）：建日历、写课程事件�
 //      状态栏。根仍是单个全屏 ScrollView + LazyVStack(spacing: 0)，不会带回大白缝；
 //      TabView、切周、点课程块、导出都不动。spacing: 0 和 ignoresSafeAreaEdges
 //      缺一个都不行。
+// build 54 失败（2026-11-18 23:58 Russell 截图）：safeAreaInset 把课表页彻底搞坏了——
+//      顶栏被拉散（第12周+导出钉在顶部，星期条掉到屏幕中间），网格被顶到屏幕外、
+//      第 1 节只能在屏幕最底下露个边，底栏还压在课上面。比 build 53 的溢出严重得多。
+//      专家“绝对不会带回大白缝”的保证是错的。build 55 已回滚到 build 53 的布局。
+//      按规则 (11)：溢出问题已失败两次（build 52、build 54），不要再自行试修法，
+//      等专家看完 build 54 的失败再定。
 
 struct ScheduleView: View {
     @Environment(AppState.self) private var appState
@@ -185,77 +191,76 @@ struct ScheduleView: View {
                 .padding(.top, 4)
                 .padding(.bottom, 10)
         }
-        // build 54（专家意见）：白底向上延伸铺满状态栏安全区（y = 0 ... 59pt），
-        // 彻底挡住滑上去的课表，时间/电量图标永远清晰。
-        .background(Color.white, ignoresSafeAreaEdges: .top)
+        .background(Color.white)
     }
 
     var body: some View {
-        // build 54（专家意见）：顶栏改用 ScrollView 的 .safeAreaInset(edge: .top, spacing: 0) 钉住，
-        // 不再用 LazyVStack 的 Section header——TabView(.page) 是 UIKit 的 UIPageViewController，
-        // 会破坏 pinnedViews 的粘性定位，网格滑过顶栏顶到状态栏（build 52 的 contentMargins
-        // 修法是错的）。根仍是单个全屏 ScrollView，不会带回大白缝。
+        // build 55：回滚 build 54——safeAreaInset 把课表页彻底搞坏了（顶栏被拉散、
+        // 星期条掉到屏幕中间、网格被顶到屏幕外，Russell 23:58 截图确认）。
+        // 先恢复 build 53 的 Section + pinnedViews 布局（能用，只是顶栏会滑进状态栏），
+        // 溢出问题等专家看完 build 54 的失败再定。不要再自行试 safeAreaInset。
         ScrollView(.vertical, showsIndicators: false) {
-            LazyVStack(spacing: 0) {
-                if appState.scheduleLoading && appState.courses.isEmpty {
-                    VStack(spacing: 12) {
-                        ProgressView("正在拉取课表…")
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 300)
-                } else {
-                    // 周分页（原版 PageView 的对应物）：原生分页滑动动画，
-                    // 横滑切周，纵向位置不动（不像 build 30 的 scrollTo 那样跳顶）。
-                    // 给死高度，不让 TabView 自己量高度。
-                    TabView(selection: Binding(
-                        get: { week },
-                        set: { displayWeek = $0 }
-                    )) {
-                        ForEach(1...20, id: \.self) { w in
-                            let list = courses(for: w)
-                            // 单一 ZStack 包裹 if/else，只在最外层打唯一一个 .tag(w)：
-                            // 原先两个分支各打 .tag(w)，换校时某周从“有课”变“无课”，
-                            // 同一 tag 绑在结构身份不同的分支上，UIPageViewController
-                            // 会销毁当前页控制器并触发崩溃（专家意见，build 42）。
-                            ZStack {
-                                if list.isEmpty {
-                                    VStack(spacing: 12) {
-                                        Image(systemName: "calendar.badge.exclamationmark")
-                                            .font(.largeTitle)
-                                            .foregroundStyle(.black.opacity(0.4))
-                                        Text(appState.scheduleError ?? "本周没有课程")
-                                            .font(.subheadline)
-                                            .foregroundStyle(.black.opacity(0.7))
-                                            .multilineTextAlignment(.center)
-                                        Button("重新拉取") {
-                                            Task { await appState.refreshSchedule() }
-                                        }
-                                        .buttonStyle(.bordered)
-                                    }
-                                    .frame(maxWidth: .infinity, minHeight: 300)
-                                } else {
-                                    ScheduleGrid(
-                                        courses: list,
-                                        school: appState.school,
-                                        rowHeight: rowHeightValue,
-                                        appearance: appState.scheduleAppearance,
-                                        onSelect: { start, end, course in
-                                            selectedBlock = (start, end, course)
-                                        }
-                                    )
-                                    .padding(.bottom, bottomClearance)
-                                }
-                            }
-                            .tag(w)
+            LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                Section {
+                    if appState.scheduleLoading && appState.courses.isEmpty {
+                        VStack(spacing: 12) {
+                            ProgressView("正在拉取课表…")
                         }
+                        .frame(maxWidth: .infinity, minHeight: 300)
+                    } else {
+                        // 周分页（原版 PageView 的对应物）：原生分页滑动动画，
+                        // 横滑切周，纵向位置不动（不像 build 30 的 scrollTo 那样跳顶）。
+                        // 给死高度，不让 TabView 自己量高度。
+                        TabView(selection: Binding(
+                            get: { week },
+                            set: { displayWeek = $0 }
+                        )) {
+                            ForEach(1...20, id: \.self) { w in
+                                let list = courses(for: w)
+                                // 单一 ZStack 包裹 if/else，只在最外层打唯一一个 .tag(w)：
+                                // 原先两个分支各打 .tag(w)，换校时某周从“有课”变“无课”，
+                                // 同一 tag 绑在结构身份不同的分支上，UIPageViewController
+                                // 会销毁当前页控制器并触发崩溃（专家意见，build 42）。
+                                ZStack {
+                                    if list.isEmpty {
+                                        VStack(spacing: 12) {
+                                            Image(systemName: "calendar.badge.exclamationmark")
+                                                .font(.largeTitle)
+                                                .foregroundStyle(.black.opacity(0.4))
+                                            Text(appState.scheduleError ?? "本周没有课程")
+                                                .font(.subheadline)
+                                                .foregroundStyle(.black.opacity(0.7))
+                                                .multilineTextAlignment(.center)
+                                            Button("重新拉取") {
+                                                Task { await appState.refreshSchedule() }
+                                            }
+                                            .buttonStyle(.bordered)
+                                        }
+                                        .frame(maxWidth: .infinity, minHeight: 300)
+                                    } else {
+                                        ScheduleGrid(
+                                            courses: list,
+                                            school: appState.school,
+                                            rowHeight: rowHeightValue,
+                                            appearance: appState.scheduleAppearance,
+                                            onSelect: { start, end, course in
+                                                selectedBlock = (start, end, course)
+                                            }
+                                        )
+                                        .padding(.bottom, bottomClearance)
+                                    }
+                                }
+                                .tag(w)
+                            }
+                        }
+                        .id(appState.school.id) // 换校时干净重建分页器（build 42）
+                        .tabViewStyle(.page(indexDisplayMode: .never))
+                        .frame(height: rowHeightValue * CGFloat(appState.school.sectionCount) + bottomClearance)
                     }
-                    .id(appState.school.id) // 换校时干净重建分页器（build 42）
-                    .tabViewStyle(.page(indexDisplayMode: .never))
-                    .frame(height: rowHeightValue * CGFloat(appState.school.sectionCount) + bottomClearance)
+                } header: {
+                    headerView
                 }
             }
-        }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            headerView
         }
         .background(Color.white)
         // 课表是白底黑字的亮色页：整页用亮色模式，导出/日期玻璃药丸才是
