@@ -79,7 +79,10 @@ enum GXVNUService {
         return snippet.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func clearSession() {
+    /// 清掉该校 Cookie（登录失败后清脏会话用）。
+    /// build 44：去掉 private——AppState.reloginGXVNU 需要从外部调它
+    /// （build 43 误写成 private，CI 编译失败）。
+    static func clearSession() {
         client.cookies.clear(host: school.host)
     }
 
