@@ -22,6 +22,10 @@ struct ContentView: View {
             }
         }
         .tint(.white)
+        // 底栏玻璃跟着当前页走：课表是白底页，底栏要是深色玻璃就灰一块（build 31 图里
+        // 圈出来的底栏就是这么灰的）；切到课表时整 TabView 用亮色，底栏变浅色玻璃，
+        // 回首页/我的页恢复深色。只影响当前可见的页，离屏的页不参与。
+        .preferredColorScheme(selectedTab == 1 ? .light : .dark)
         .fullScreenCover(isPresented: Binding(
             get: { appState.showLoginSheet },
             set: { appState.showLoginSheet = $0 }
@@ -99,7 +103,7 @@ struct CaptchaDialogView: View {
                         Image(uiImage: uiImage)
                             .resizable()
                             .scaledToFit()
-                            .frame(width: 110, height: 40)
+                            .frame(width: 80, height: 25)
                             .clipShape(RoundedRectangle(cornerRadius: 6))
                             .onTapGesture {
                                 Task { await appState.fetchCaptcha() }
@@ -107,7 +111,7 @@ struct CaptchaDialogView: View {
                     } else {
                         RoundedRectangle(cornerRadius: 6)
                             .fill(Color.gray.opacity(0.2))
-                            .frame(width: 110, height: 40)
+                            .frame(width: 80, height: 25)
                             .overlay(Text("点我刷新").font(.caption).foregroundStyle(.gray))
                             .onTapGesture {
                                 Task { await appState.fetchCaptcha() }

@@ -419,8 +419,8 @@ struct HomeView: View {
                     .padding(.top, 16)
                     .padding(.horizontal, 20)
 
-                    // 今天的
-                    Text("今天的")
+                    // 今日课程（Russell 2026-11-18 10:56：改回今日课程/明日课程）
+                    Text("今日课程")
                         .font(.system(size: 18, weight: .bold))
                         .foregroundStyle(.white)
                         .padding(.top, 24)
@@ -444,8 +444,8 @@ struct HomeView: View {
                         .padding(.horizontal, 20)
                     }
 
-                    // 明天的
-                    Text("明天的")
+                    // 明日课程
+                    Text("明日课程")
                         .font(.system(size: 18, weight: .bold))
                         .foregroundStyle(.white)
                         .padding(.top, 20)

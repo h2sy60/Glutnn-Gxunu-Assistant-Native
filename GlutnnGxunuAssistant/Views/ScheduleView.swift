@@ -133,7 +133,9 @@ struct ScheduleView: View {
                             .padding(.horizontal, 16)
                             .padding(.vertical, 10)
                     }
-                    .glassEffect(.regular, in: Capsule())
+                    // 白底页上的玻璃药丸必须显式加白 tint：整 App 强制深色模式，
+                    // 光靠 .preferredColorScheme(.light) 玻璃还是深灰（build 31 实测）。
+                    .glassEffect(.regular.tint(.white.opacity(0.75)), in: Capsule())
                     // 日期 + 定位钉，点按回到当前周。
                     Button {
                         backToCurrentWeek()
@@ -149,7 +151,7 @@ struct ScheduleView: View {
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
                     }
-                    .glassEffect(.regular, in: Capsule())
+                    .glassEffect(.regular.tint(.white.opacity(0.75)), in: Capsule())
                 }
             }
             .padding(.horizontal, 16)
