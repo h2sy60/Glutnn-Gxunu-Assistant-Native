@@ -23,7 +23,7 @@ Flutter 版（h2sy60/Glutnn-Gxunu-Assistant）已停：`real_liquid_glass` 在 i
 
 ## 构建（未签名 IPA）
 
-每次推 `main`（改 `GlutnnGxunuAssistant/` 或工程文件）都会触发 GitHub Actions（macOS runner + `xcodebuild`，`CODE_SIGNING_ALLOWED=NO`），产物是 `Glutnn-Gxunu-Assistant-Native-unsigned-ipa`（保留 90 天）。拿到 IPA 后用全能签 + 企业证书重签安装，和 Flutter 版一样。
+每次推 `main`（改 `GlutnnGxunuAssistant/` 或工程文件）都会触发 GitHub Actions（macOS runner + `xcodebuild`，`CODE_SIGNING_ALLOWED=NO`），产物是 `Glutnn-Gxunu-Assistant-Native-unsigned-ipa`。每次构建成功后会自动删掉之前所有的旧构建，Actions 里只留最新一次构建（连同它的 IPA）。拿到 IPA 后用全能签 + 企业证书重签安装，和 Flutter 版一样。
 
 本地构建（需要 Xcode 26）：
 
