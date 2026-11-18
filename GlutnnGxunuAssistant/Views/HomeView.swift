@@ -5,7 +5,7 @@ import SwiftUI
 struct HomeView: View {
     @Environment(AppState.self) private var appState
     @Binding var selectedTab: Int
-    @State private var showExamsAlert = false
+    @State private var showExams = false
     @State private var showScores = false
     /// 刷新防刷计数（原版 home.dart refresh() 同款）：点 7 下“你太快了!”，
     /// 8 下以上“你慢一点!”+ 5 秒冷却。
@@ -416,7 +416,7 @@ struct HomeView: View {
                             if !appState.isLoggedIn {
                                 appState.showLoginSheet = true
                             } else {
-                                showExamsAlert = true
+                                showExams = true
                             }
                         }
                     }
@@ -494,8 +494,8 @@ struct HomeView: View {
                 await refreshWithFeedback()
             }
             .toolbar(.hidden, for: .navigationBar)
-            .alert("考试功能即将上线", isPresented: $showExamsAlert) {
-                Button("知道了", role: .cancel) {}
+            .navigationDestination(isPresented: $showExams) {
+                ExamsView()
             }
             .navigationDestination(isPresented: $showScores) {
                 ScoreView()
