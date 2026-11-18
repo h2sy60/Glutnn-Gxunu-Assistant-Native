@@ -251,6 +251,57 @@ struct ExamItem: Identifiable {
     let seatNumber: String
     let examName: String
     let campus: String
+    /// 是否已考（build 58：旧项目 getExams 按考试结束时间算；职师院暂不算，默认 false）。
+    let isPast: Bool = false
+}
+
+// MARK: - 桂工教学计划（build 58，按旧项目 TeachingPlan/CourseInfo）
+
+/// 桂工教学计划：院系/专业/年级/学制 + 按学期分的课程 + 通过统计。
+struct GUTTeachingPlan {
+    let department: String
+    let major: String
+    let grade: Int
+    let educationalLevel: String
+    let schoolingLength: Int
+    let semesters: [[GUTPlanCourse]]
+    let passCount: Int
+    let failCount: Int
+    let unknownCount: Int
+    let totalCourseCount: Int
+    let totalExamCount: Int
+    let totalMajorCourseCount: Int
+}
+
+/// 教学计划里的一门课（旧项目 CourseInfo）。
+struct GUTPlanCourse: Identifiable {
+    var id: String { code }
+    let code: String
+    let name: String
+    let assessmentType: String
+    let credit: String
+    let hours: String
+    let category: String
+}
+
+// MARK: - 桂工空教室（build 58，按旧项目 Classroom）
+
+/// 一栋教学楼（空教室下拉选项）。
+struct GUTClassroomBuilding: Identifiable {
+    var id: String { buildingId }
+    let buildingId: String
+    let name: String
+}
+
+/// 一间空教室：教室号、座位数、考试座位数、类型、11 节占用（true=该节空闲）。
+struct GUTClassroom: Identifiable {
+    var id: String { roomNumber }
+    let roomNumber: String
+    let seatCount: Int
+    let examSeatCount: Int
+    let type: String
+    let occupancy: [Bool]
+    let isAllDayFree: Bool
 }
 
 /// 等级分换算成数字（与 Flutter 版 levelToNumber 一致）。
