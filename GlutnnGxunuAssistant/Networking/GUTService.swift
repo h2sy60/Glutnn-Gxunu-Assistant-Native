@@ -282,9 +282,11 @@ enum GUTService {
     /// td[7]=学分、td[9]=含“免考”时成绩记“合格”、td[11]=课程类别。
     static func fetchScores(year: Int? = nil, term: String? = nil) async throws -> [CourseScore] {
         // build 43：砍掉事前 isLoggedIn() 探针，直接发业务请求，拿响应后检查。
-        // build 53：year/term 为筛选（nil = 全部）。桂工学期码暂按 1=第一学期、2=第二学期。
+        // build 53：year/term 为筛选（nil = 全部）。
+        // build 58：按旧项目（已验证）——year 传日历年-1980（如 2026→46），
+        // term 秋=3、春=1（ScoreView.termCode 负责映射）。之前直接传日历年是错的。
         let form = [
-            "year": year.map(String.init) ?? "",
+            "year": year.map { String($0 - 1980) } ?? "",
             "term": term ?? "",
             "prop": "",
             "groupName": "",
@@ -359,44 +361,36 @@ enum GUTService {
     // MARK: - 考试
 
     /// 查考试安排（build 43 新增，专家给的老正方接口）。
-    /// 依次尝试两个端点，解析 datalist/infolist_tab 表，按表头列名
-    /// （课程名称、考试时间、考场/地点、座位）提取每行。
+    /// 查考试安排（build 58 按旧项目 getExams 重写，旧项目已验证）。
+    /// POST /academic/manager/examstu/studentQueryAllExam.do（无 body）。
+    /// 之前 build 43 的 GET + 按表头定位列与旧项目不符，改回旧项目写法。
     static func fetchExams() async throws -> [ExamItem] {
-        let paths = [
-            "/academic/manager/examstu/studentQueryAllExam.do",
-            "/academic/student/exam/index.jsdo",
-        ]
-        var lastError: Error = ScheduleError.parseError
-        for path in paths {
-            guard let url = school.url(path) else { continue }
-            do {
-                let (data, response) = try await client.get(url)
-                guard let html = decodeGUTHTML(data, response: response), !html.isEmpty else {
-                    lastError = ScheduleError.parseError
-                    continue
-                }
-                if isGUTSessionExpired(response: response, html: html) {
-                    throw ScheduleError.sessionExpired
-                }
-                let exams = try parseExamsHTML(html)
-                AppLogger.shared.log("GUT exams: parsed \(exams.count) items from \(path)")
-                return exams
-            } catch let error as ScheduleError {
-                if error == .sessionExpired { throw error }
-                lastError = error
-            } catch let error as NetworkError {
-                lastError = ScheduleError.network(error.errorDescription ?? "网络错误")
-            } catch {
-                lastError = ScheduleError.parseError
-            }
+        guard let url = school.url("/academic/manager/examstu/studentQueryAllExam.do") else {
+            throw ScheduleError.network("地址无效")
         }
-        throw lastError
+        let data: Data
+        let response: HTTPURLResponse
+        do {
+            (data, response) = try await client.post(url, body: nil)
+        } catch let error as NetworkError {
+            throw ScheduleError.network(error.errorDescription ?? "网络错误")
+        }
+        guard let html = decodeGUTHTML(data, response: response), !html.isEmpty else {
+            throw ScheduleError.parseError
+        }
+        if isGUTSessionExpired(response: response, html: html) {
+            throw ScheduleError.sessionExpired
+        }
+        let exams = try parseExamsHTML(html)
+        AppLogger.shared.log("GUT exams: parsed \(exams.count) items")
+        return exams
     }
 
-    /// 解析桂工考试页：找 datalist/infolist_tab 表，按表头定位列。
+    /// 解析桂工考试页（旧项目 getExams）：datalist 表，跳过表头，固定列号：
+    /// [1]=课程名、[2]=考试时间、[3]=考场（取最后一段，如 "雁山 5-101" → "5-101"）。
     static func parseExamsHTML(_ html: String) throws -> [ExamItem] {
         guard let tableRegex = try? NSRegularExpression(
-            pattern: #"<table[^>]*(?:datalist|infolist_tab)[^>]*>([\s\S]*?)</table>"#,
+            pattern: #"<table[^>]*datalist[^>]*>([\s\S]*?)</table>"#,
             options: [.caseInsensitive, .dotMatchesLineSeparators]),
             let tableMatch = tableRegex.firstMatch(in: html, options: [], range: NSRange(html.startIndex..., in: html)),
             tableMatch.numberOfRanges >= 2,
@@ -409,55 +403,343 @@ enum GUTService {
         let tableHTML = String(html[tableRange])
         let rows = trRows(tableHTML)
         guard !rows.isEmpty else { return [] }
-        // 表头定位列下标（表头用 <th>，用 cellTexts 同时取 td/th）。
-        let headerCells = cellTexts(rows[0])
-        func colIndex(_ names: [String]) -> Int? {
-            for (i, cell) in headerCells.enumerated() {
-                for name in names {
-                    if cell.contains(name) { return i }
-                }
-            }
-            return nil
-        }
-        let nameIdx = colIndex(["课程名称", "课程名", "科目"])
-        let timeIdx = colIndex(["考试时间", "时间"])
-        let locIdx = colIndex(["考场", "地点", "教室"])
-        let seatIdx = colIndex(["座位", "座号"])
-        guard nameIdx != nil || timeIdx != nil else {
-            throw ScheduleError.parseError
-        }
         var exams: [ExamItem] = []
         for rowHTML in rows.dropFirst() {
             let cells = tdTexts(rowHTML)
-            guard !cells.isEmpty else { continue }
-            func cell(_ idx: Int?) -> String {
-                guard let idx, idx < cells.count else { return "" }
-                return cells[idx]
-            }
-            let name = cell(nameIdx)
+            guard cells.count > 3 else { continue }
+            let name = cells[1]
             guard !name.isEmpty else { continue }
+            let timeRange = cells[2]
+            let location = cells[3].split(separator: " ").last.map(String.init) ?? cells[3]
             exams.append(ExamItem(
                 courseName: name,
-                time: cell(timeIdx).isEmpty ? "时间待定" : cell(timeIdx),
-                location: cell(locIdx).isEmpty ? "地点待定" : cell(locIdx),
-                seatNumber: cell(seatIdx),
+                time: timeRange.isEmpty ? "时间待定" : timeRange,
+                location: location.isEmpty ? "地点待定" : location,
+                seatNumber: "",
                 examName: "",
-                campus: ""
+                campus: "",
+                isPast: examIsPast(timeRange: timeRange)
             ))
         }
         return exams
     }
 
-    /// 提取一段 HTML 里所有 <td> 或 <th> 的文本（表头定位用）。
-    private static func cellTexts(_ html: String) -> [String] {
-        guard let regex = try? NSRegularExpression(
-            pattern: #"<(?:td|th)[^>]*>([\s\S]*?)</(?:td|th)>"#,
-            options: [.caseInsensitive, .dotMatchesLineSeparators]
-        ) else { return [] }
-        let range = NSRange(html.startIndex..., in: html)
-        return regex.matches(in: html, options: [], range: range).compactMap { match in
-            guard match.numberOfRanges >= 2, let r = Range(match.range(at: 1), in: html) else { return nil }
-            return stripTags(String(html[r])).trimmingCharacters(in: .whitespacesAndNewlines)
+    /// 旧项目逻辑：考试时间形如 "2026-01-05 08:00--10:00"，取结束时间，过了即已考。
+    private static func examIsPast(timeRange: String) -> Bool {
+        let parts = timeRange.split(separator: " ")
+        guard parts.count >= 2 else { return false }
+        let datePart = String(parts[0])
+        let times = parts[1].split(separator: "--")
+        guard times.count >= 2 else { return false }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        guard let endTime = formatter.date(from: "\(datePart) \(times[1])") else { return false }
+        return Date() > endTime
+    }
+
+    // MARK: - 教学计划
+
+    /// 查教学计划（build 58 新增，按旧项目 getTeachingPlan，旧项目已验证）。
+    /// 两步：先 GET studentSelfSchedule.jsdo，取 table.broken_tab 最后一个链接里的
+    /// studentId/classId；再 GET studentScheduleShowByTerm.do?z=z&studentId=&classId=。
+    static func fetchTeachingPlan() async throws -> GUTTeachingPlan {
+        guard let listURL = school.url("/academic/manager/studyschedule/studentSelfSchedule.jsdo") else {
+            throw ScheduleError.network("地址无效")
         }
+        let listData: Data
+        let listResponse: HTTPURLResponse
+        do {
+            (listData, listResponse) = try await client.get(listURL)
+        } catch let error as NetworkError {
+            throw ScheduleError.network(error.errorDescription ?? "网络错误")
+        }
+        guard let listHTML = decodeGUTHTML(listData, response: listResponse), !listHTML.isEmpty else {
+            throw ScheduleError.parseError
+        }
+        if isGUTSessionExpired(response: listResponse, html: listHTML) {
+            throw ScheduleError.sessionExpired
+        }
+        guard let ids = teachingPlanIDs(from: listHTML) else {
+            throw ScheduleError.parseError
+        }
+        guard let planURL = school.url(
+            "/academic/manager/studyschedule/studentScheduleShowByTerm.do",
+            query: ["z": "z", "studentId": ids.studentId, "classId": ids.classId]
+        ) else {
+            throw ScheduleError.network("地址无效")
+        }
+        let planData: Data
+        let planResponse: HTTPURLResponse
+        do {
+            (planData, planResponse) = try await client.get(planURL)
+        } catch let error as NetworkError {
+            throw ScheduleError.network(error.errorDescription ?? "网络错误")
+        }
+        guard let planHTML = decodeGUTHTML(planData, response: planResponse), !planHTML.isEmpty else {
+            throw ScheduleError.parseError
+        }
+        if isGUTSessionExpired(response: planResponse, html: planHTML) {
+            throw ScheduleError.sessionExpired
+        }
+        let plan = try parseTeachingPlanHTML(planHTML)
+        AppLogger.shared.log("GUT teaching plan: \(plan.semesters.count) semesters, \(plan.totalCourseCount) courses")
+        return plan
+    }
+
+    /// 从 studentSelfSchedule 页取 studentId/classId：
+    /// table.broken_tab 里最后一个 <a> 的 href 查询参数（旧项目做法）。
+    private static func teachingPlanIDs(from html: String) -> (studentId: String, classId: String)? {
+        guard let tableRegex = try? NSRegularExpression(
+            pattern: #"<table[^>]*broken_tab[^>]*>([\s\S]*?)</table>"#,
+            options: [.caseInsensitive, .dotMatchesLineSeparators]),
+            let tableMatch = tableRegex.firstMatch(in: html, options: [], range: NSRange(html.startIndex..., in: html)),
+            tableMatch.numberOfRanges >= 2,
+            let tableRange = Range(tableMatch.range(at: 1), in: html) else { return nil }
+        let tableHTML = String(html[tableRange])
+        guard let hrefRegex = try? NSRegularExpression(
+            pattern: #"href="([^"]+)""#,
+            options: [.caseInsensitive]) else { return nil }
+        let matches = hrefRegex.matches(in: tableHTML, options: [], range: NSRange(tableHTML.startIndex..., in: tableHTML))
+        guard let last = matches.last, last.numberOfRanges >= 2,
+              let hrefRange = Range(last.range(at: 1), in: tableHTML) else { return nil }
+        let href = String(tableHTML[hrefRange])
+        guard let queryStart = href.firstIndex(of: "?") else { return nil }
+        let query = String(href[href.index(after: queryStart)...])
+        var studentId: String?
+        var classId: String?
+        for pair in query.split(separator: "&") {
+            let kv = pair.split(separator: "=", maxSplits: 1)
+            guard kv.count == 2 else { continue }
+            if kv[0] == "studentId" { studentId = String(kv[1]) }
+            if kv[0] == "classId" { classId = String(kv[1]) }
+        }
+        guard let studentId, let classId, !studentId.isEmpty, !classId.isEmpty else { return nil }
+        return (studentId, classId)
+    }
+
+    /// 解析教学计划页（旧项目 getTeachingPlan 的 next 部分）。
+    static func parseTeachingPlanHTML(_ html: String) throws -> GUTTeachingPlan {
+        // 通过/未通过/未知计数：img.no_output 的图片名。
+        let failCount = countOccurrences(html, "course_failed.png") + countOccurrences(html, "course_failed_reelect.png")
+        let passCount = countOccurrences(html, "course_pass.png") + countOccurrences(html, "course_pass_reelect.png")
+        let unknownCount = countOccurrences(html, "course_unknown_pass.png")
+        // 院系/专业/年级/层次：取 datalist 表里“恰好 4 格”的最后一行
+        // （旧项目取 table.datalist tr:last-child 的前 4 格；课程行是 6 格，不会误取）。
+        var department = "", major = "", educationalLevel = ""
+        var grade = 0
+        if let tableRegex = try? NSRegularExpression(
+            pattern: #"<table[^>]*datalist[^>]*>([\s\S]*?)</table>"#,
+            options: [.caseInsensitive, .dotMatchesLineSeparators]) {
+            let range = NSRange(html.startIndex..., in: html)
+            for tableMatch in tableRegex.matches(in: html, options: [], range: range) {
+                guard tableMatch.numberOfRanges >= 2,
+                      let tableRange = Range(tableMatch.range(at: 1), in: html) else { continue }
+                let tableHTML = String(html[tableRange])
+                guard let lastRow = trRows(tableHTML).last else { continue }
+                let cells = tdTexts(lastRow)
+                guard cells.count == 4 else { continue }
+                department = cells[0]
+                major = cells[1]
+                grade = Int(cells[2].filter { $0.isNumber }) ?? 0
+                educationalLevel = cells[3]
+                break
+            }
+        }
+        // 课程：table.datalist.output_ctx 的行；单格含“学年”即新学期。
+        var semesters: [[GUTPlanCourse]] = []
+        var totalCourseCount = 0, totalExamCount = 0, totalMajorCourseCount = 0
+        if let tableRegex = try? NSRegularExpression(
+            pattern: #"<table[^>]*datalist[^>]*output_ctx[^>]*>([\s\S]*?)</table>"#,
+            options: [.caseInsensitive, .dotMatchesLineSeparators]),
+            let tableMatch = tableRegex.firstMatch(in: html, options: [], range: NSRange(html.startIndex..., in: html)),
+            tableMatch.numberOfRanges >= 2,
+            let tableRange = Range(tableMatch.range(at: 1), in: html) {
+            let tableHTML = String(html[tableRange])
+            for rowHTML in trRows(tableHTML) {
+                let cells = tdTexts(rowHTML)
+                if cells.count == 1, cells[0].contains("学年") {
+                    semesters.append([])
+                    continue
+                }
+                guard cells.count > 5 else { continue }
+                totalCourseCount += 1
+                if cells[2].contains("考试") { totalExamCount += 1 }
+                if cells[5].contains("专业") { totalMajorCourseCount += 1 }
+                if semesters.isEmpty { semesters.append([]) }
+                semesters[semesters.count - 1].append(GUTPlanCourse(
+                    code: cells[0], name: cells[1], assessmentType: cells[2],
+                    credit: cells[3], hours: cells[4].replacingOccurrences(of: ".0", with: ""),
+                    category: cells[5]
+                ))
+            }
+        }
+        guard !semesters.isEmpty else { throw ScheduleError.parseError }
+        // 学制 = 学期数 / 2 向上取整（旧项目：(semesterCount / 2).ceil()）。
+        let schoolingLength = (semesters.count + 1) / 2
+        return GUTTeachingPlan(
+            department: department, major: major, grade: grade,
+            educationalLevel: educationalLevel, schoolingLength: schoolingLength,
+            semesters: semesters, passCount: passCount, failCount: failCount,
+            unknownCount: unknownCount, totalCourseCount: totalCourseCount,
+            totalExamCount: totalExamCount, totalMajorCourseCount: totalMajorCourseCount
+        )
+    }
+
+    /// 统计一段文本里某个子串出现次数。
+    private static func countOccurrences(_ text: String, _ needle: String) -> Int {
+        var count = 0
+        var searchRange = text.startIndex..<text.endIndex
+        while let range = text.range(of: needle, range: searchRange) {
+            count += 1
+            searchRange = range.upperBound..<text.endIndex
+        }
+        return count
+    }
+
+    // MARK: - 空教室
+
+    /// 取教学楼下拉选项（build 58 新增，按旧项目 getFreeClassrooms 日模式，旧项目已验证）。
+    /// POST 空教室日查询（默认参数），解析 #buildingid 的 option（跳过“请选择”）。
+    static func fetchClassroomBuildings() async throws -> [GUTClassroomBuilding] {
+        let form = [
+            "aid": "1",
+            "buildingid": "-1",
+            "room": "-1",
+            "whichweek": "-1",
+            "week": "-1",
+            "Submit": "确 定",
+        ]
+        guard let url = school.url("/academic/teacher/teachresource/roomschedulequery.jsdo") else {
+            throw ScheduleError.network("地址无效")
+        }
+        let data: Data
+        let response: HTTPURLResponse
+        do {
+            (data, response) = try await client.postForm(url, form: form)
+        } catch let error as NetworkError {
+            throw ScheduleError.network(error.errorDescription ?? "网络错误")
+        }
+        guard let html = decodeGUTHTML(data, response: response), !html.isEmpty else {
+            throw ScheduleError.parseError
+        }
+        if isGUTSessionExpired(response: response, html: html) {
+            throw ScheduleError.sessionExpired
+        }
+        guard let selectRegex = try? NSRegularExpression(
+            pattern: #"<select[^>]*id="buildingid"[^>]*>([\s\S]*?)</select>"#,
+            options: [.caseInsensitive, .dotMatchesLineSeparators]),
+            let selectMatch = selectRegex.firstMatch(in: html, options: [], range: NSRange(html.startIndex..., in: html)),
+            selectMatch.numberOfRanges >= 2,
+            let selectRange = Range(selectMatch.range(at: 1), in: html) else {
+            throw ScheduleError.parseError
+        }
+        let selectHTML = String(html[selectRange])
+        guard let optionRegex = try? NSRegularExpression(
+            pattern: #"<option[^>]*value="([^"]*)"[^>]*>([^<]*)</option>"#,
+            options: [.caseInsensitive]) else { return [] }
+        let range = NSRange(selectHTML.startIndex..., in: selectHTML)
+        var buildings: [GUTClassroomBuilding] = []
+        for match in optionRegex.matches(in: selectHTML, options: [], range: range) {
+            guard match.numberOfRanges >= 3,
+                  let idRange = Range(match.range(at: 1), in: selectHTML),
+                  let nameRange = Range(match.range(at: 2), in: selectHTML) else { continue }
+            let id = String(selectHTML[idRange])
+            let name = String(selectHTML[nameRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if id == "-1" || name.isEmpty { continue }
+            buildings.append(GUTClassroomBuilding(buildingId: id, name: name))
+        }
+        return buildings
+    }
+
+    /// 按教学楼/周次/星期查空教室（旧项目 getFreeClassrooms 周模式）。
+    static func fetchFreeClassrooms(building: String, week: String, dayOfWeek: String) async throws -> [GUTClassroom] {
+        let form = [
+            "aid": "1",
+            "buildingid": building,
+            "room": "-1",
+            "whichweek": week,
+            "week": dayOfWeek,
+            "Submit": "确 定",
+        ]
+        guard let url = school.url("/academic/teacher/teachresource/roomschedule_week.jsdo") else {
+            throw ScheduleError.network("地址无效")
+        }
+        let data: Data
+        let response: HTTPURLResponse
+        do {
+            (data, response) = try await client.postForm(url, form: form)
+        } catch let error as NetworkError {
+            throw ScheduleError.network(error.errorDescription ?? "网络错误")
+        }
+        guard let html = decodeGUTHTML(data, response: response), !html.isEmpty else {
+            throw ScheduleError.parseError
+        }
+        if isGUTSessionExpired(response: response, html: html) {
+            throw ScheduleError.sessionExpired
+        }
+        let rooms = try parseFreeClassroomsHTML(html)
+        AppLogger.shared.log("GUT free classrooms: parsed \(rooms.count) rooms")
+        return rooms
+    }
+
+    /// 解析空教室周模式页（旧项目 getFreeClassrooms 周模式）：
+    /// 每行 tr.infolist_common，[0]=教室号、[1]=座位数、[3]=考试座位数、[5]=类型；
+    /// 嵌套表第二行 11 格，含 &nbsp; 即该节空闲。
+    static func parseFreeClassroomsHTML(_ html: String) throws -> [GUTClassroom] {
+        guard let rowRegex = try? NSRegularExpression(
+            pattern: #"<tr[^>]*infolist_common[^>]*>([\s\S]*?</table>[\s\S]*?)</tr>"#,
+            options: [.caseInsensitive, .dotMatchesLineSeparators]) else { return [] }
+        let range = NSRange(html.startIndex..., in: html)
+        var rooms: [GUTClassroom] = []
+        for match in rowRegex.matches(in: html, options: [], range: range) {
+            guard match.numberOfRanges >= 2,
+                  let rowRange = Range(match.range(at: 1), in: html) else { continue }
+            let rowHTML = String(html[rowRange])
+            // 嵌套表单独解析占用；行里去掉嵌套表后再取外层格子。
+            let nestedTable = firstMatch(in: rowHTML, pattern: #"<table[\s\S]*?</table>"#) ?? ""
+            let rowWithoutTable = nestedTable.isEmpty ? rowHTML : rowHTML.replacingOccurrences(of: nestedTable, with: "")
+            let cells = tdTexts(rowWithoutTable)
+            guard cells.count > 5 else { continue }
+            let roomNumber = cells[0]
+            guard !roomNumber.isEmpty else { continue }
+            let occupancy = parseClassroomOccupancy(nestedTable)
+            let freeCount = occupancy.filter { $0 }.count
+            rooms.append(GUTClassroom(
+                roomNumber: roomNumber,
+                seatCount: Int(cells[1]) ?? 0,
+                examSeatCount: Int(cells[3]) ?? 0,
+                type: cells[5],
+                occupancy: occupancy,
+                isAllDayFree: freeCount == 11
+            ))
+        }
+        return rooms
+    }
+
+    /// 嵌套表第二行 11 格：含 &nbsp; 即该节空闲（旧项目 isFree 判断）。
+    private static func parseClassroomOccupancy(_ tableHTML: String) -> [Bool] {
+        guard !tableHTML.isEmpty else { return [] }
+        let rows = trRows(tableHTML)
+        guard rows.count >= 2 else { return [] }
+        guard let tdRegex = try? NSRegularExpression(
+            pattern: #"<td[^>]*>([\s\S]*?)</td>"#,
+            options: [.caseInsensitive, .dotMatchesLineSeparators]) else { return [] }
+        let rowHTML = rows[1]
+        let range = NSRange(rowHTML.startIndex..., in: rowHTML)
+        return tdRegex.matches(in: rowHTML, options: [], range: range).compactMap { match in
+            guard match.numberOfRanges >= 2,
+                  let r = Range(match.range(at: 1), in: rowHTML) else { return nil }
+            return String(rowHTML[r]).contains("&nbsp;")
+        }
+    }
+
+    /// 取一段 HTML 里第一个匹配的整段（用于嵌套表）。
+    private static func firstMatch(in html: String, pattern: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive, .dotMatchesLineSeparators]),
+              let match = regex.firstMatch(in: html, options: [], range: NSRange(html.startIndex..., in: html)),
+              match.numberOfRanges >= 1,
+              let r = Range(match.range(at: 0), in: html) else { return nil }
+        return String(html[r])
     }
 }
