@@ -17,6 +17,11 @@ struct HomeView: View {
     @State private var refreshCooldown = false
     /// 正在分段刷新时，再来的刷新请求直接跳过（防重叠）。
     @State private var isRefreshing = false
+    /// 首页显示开关（build 63 首页设置）：用 @AppStorage 读同一个键，
+    /// 设置页一改首页立即重绘（AppSettings 不是 Observable，直接读不会刷新）。
+    @AppStorage("ShowRecentExams") private var showRecentExams = true
+    @AppStorage("ShowTomorrowCourses") private var showTomorrowCourses = true
+    @AppStorage("ShowGreeting") private var showGreeting = true
 
     /// 今天星期几（1=星期一 … 7=星期日）。
     private var todayWeekday: Int {
@@ -350,12 +355,14 @@ struct HomeView: View {
 
                 ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    // 问候（Flutter 问候语不带人名）
+                    // 问候（Flutter 问候语不带人名；build 63 首页设置可关）
                     HStack(alignment: .center) {
-                        Text(greeting)
-                            .font(.system(size: 44, weight: .heavy))
-                            .foregroundStyle(.white)
-                            .shadow(color: .black.opacity(0.4), radius: 8, x: 0, y: 2)
+                        if showGreeting {
+                            Text(greeting)
+                                .font(.system(size: 44, weight: .heavy))
+                                .foregroundStyle(.white)
+                                .shadow(color: .black.opacity(0.4), radius: 8, x: 0, y: 2)
+                        }
                         Spacer()
                         Button { selectedTab = 2 } label: {
                             Image(systemName: "ellipsis")
@@ -452,7 +459,8 @@ struct HomeView: View {
 
                     // 近期考试（build 60，旧项目 ExamsTipsBar 同款位置：首页胶囊下方）。
                     // 只在登录且有待考考试时出现，点按进完整考试列表。
-                    if appState.isLoggedIn, !upcomingExams.isEmpty {
+                    // build 63 首页设置可关。
+                    if showRecentExams, appState.isLoggedIn, !upcomingExams.isEmpty {
                         Text("近期考试")
                             .font(.system(size: 18, weight: .bold))
                             .foregroundStyle(.white)
@@ -523,22 +531,23 @@ struct HomeView: View {
                         .padding(.horizontal, 20)
                     }
 
-                    // 明日课程
-                    Text("明日课程")
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundStyle(.white)
-                        .padding(.top, 20)
-                        .padding(.horizontal, 20)
-
-                    if tomorrowSections.isEmpty {
-                        Text("明天没有课")
-                            .font(.system(size: 15))
-                            .foregroundStyle(.white.opacity(0.7))
-                            .padding(.top, 10)
+                    // 明日课程（build 63 首页设置可关）
+                    if showTomorrowCourses {
+                        Text("明日课程")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.top, 20)
                             .padding(.horizontal, 20)
-                    } else {
-                        VStack(spacing: 0) {
-                            ForEach(tomorrowSections) { daySection in
+
+                        if tomorrowSections.isEmpty {
+                            Text("明天没有课")
+                                .font(.system(size: 15))
+                                .foregroundStyle(.white.opacity(0.7))
+                                .padding(.top, 10)
+                                .padding(.horizontal, 20)
+                        } else {
+                            VStack(spacing: 0) {
+                                ForEach(tomorrowSections) { daySection in
                                 sectionRow(daySection, statusText: "", dayOffset: 1)
                                 if daySection.id != tomorrowSections.last?.id {
                                     Divider().background(Color.white.opacity(0.15))
@@ -546,6 +555,7 @@ struct HomeView: View {
                             }
                         }
                         .padding(.horizontal, 20)
+                    }
                     }
 
                     // 未登录提示（旧版 _LoginTip 同款）：点一下进登录页，不拦着看首页。
@@ -573,6 +583,11 @@ struct HomeView: View {
                 // 失败也不弹提示，条子不出现就是了。
                 if appState.isLoggedIn, appState.exams.isEmpty, appState.examsError == nil {
                     await appState.refreshExams()
+                }
+                // build 63 通用设置：启动时自动刷新（默认关；Russell 2026-11-18
+                // 定手动刷新为主，这个开关默认关，不改现有行为）。
+                if AppSettings.autoRefreshOnLaunch, appState.isLoggedIn {
+                    await refreshWithFeedback()
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
