@@ -9,15 +9,17 @@ import SwiftUI
 // 网格区：顶栏 + strip 固定在上；下面是一个普通纵向 ScrollView 填满剩余空间，
 //      装 11 节网格（下滑看 10-11 节）。左右横滑切周（DragGesture），
 //      点标题/日期回到当前周。
-//      行高按网格区可用高度算：（可用高 − 85）/ 除数，夹在 50–92；
+//      行高按屏幕高度算：（屏幕高 − 180 − 85）/ 除数，夹在 50–92；
 //      桂工除数 8.2（首屏 9 节）、职师院 9.2（首屏 10 节）。
-// 下坠教训（build 21/22/23/25 都栽在这，build 25 已证实）：
-//      page 式 TabView 的高度行为不可控——不管 GeometryReader 放页面里还是放外面、
-//      不管给不给明确 frame 高度，顶栏和星期条之间都会出现大白空隙、网格掉到半屏。
-//      build 25 把 GeometryReader 挪到 TabView 外面 + .frame(height:) 仍未修好，
-//      Russell 09:30 证实 build 25 截图里下坠还在。所以 build 26 彻底去掉 TabView，
-//      网格区只用普通 ScrollView（VStack 里能正常填满剩余空间，不会下坠），
-//      切周改用横滑手势 + 点标题回当前周。不要再把 TabView 拿回来。
+// 下坠教训（build 21–26 全部栽在这，build 26 已证实）：
+//      只要 ScheduleView 里有 GeometryReader，下坠就在——不管它放 TabView 页面里
+//      还是放外面、不管 TabView 在不在（build 26 已把 TabView 删了，下坠还在）。
+//      GeometryReader 在 VStack 里量的高度会把布局撑开，顶栏和星期条之间、
+//      星期条和网格之间出现大白空隙、网格掉到半屏。
+//      build 27 彻底重构：整个文件一个 GeometryReader 也不要，
+//      行高和列宽全用 UIScreen.main.bounds 直接算，
+//      网格区就是普通 VStack + ScrollView，不要再把 GeometryReader 加回来，
+//      也不要再把 TabView 加回来。
 
 struct ScheduleView: View {
     @Environment(AppState.self) private var appState
@@ -70,10 +72,12 @@ struct ScheduleView: View {
     /// 底部留白 = 浮动低栏高 + 底部边距（Flutter kBottomBarHeight + kBottomBarBottomMargin = 85 + 0）。
     private let bottomClearance: CGFloat = 85
 
-    /// 行高按学校算（Flutter schedule.dart 同款）：行高 =（网格区可用高 − 85）/ 除数，夹在 50–92。
-    private func rowHeight(for availableHeight: CGFloat) -> CGFloat {
+    /// 行高按学校算：行高 =（屏幕高 − 180 − 85）/ 除数，夹在 50–92。
+    /// 180 是顶栏 + strip + 上下安全区的合计估算；不用 GeometryReader 量。
+    private var rowHeightValue: CGFloat {
         let divisor: CGFloat = appState.school.id == .gut ? 8.2 : 9.2
-        return min(92, max(50, (availableHeight - bottomClearance) / divisor))
+        let available = UIScreen.main.bounds.height - 180
+        return min(92, max(50, (available - bottomClearance) / divisor))
     }
 
     var body: some View {
@@ -128,61 +132,56 @@ struct ScheduleView: View {
                 .padding(.top, 4)
                 .padding(.bottom, 10)
 
-            // 网格区（build 26）：不再用 TabView。普通纵向 ScrollView 填满剩余空间，
-            // GeometryReader 只用来量高度算行高，不再用它去定任何视图的 frame，
-            // 不再有“量高度 → 定高度”的循环依赖。横滑切周用 highPriorityGesture，
-            // 切周时 .id(week) 让 ScrollView 回到顶部。
-            GeometryReader { geo in
-                let rh = rowHeight(for: geo.size.height)
-                if appState.scheduleLoading && appState.courses.isEmpty {
-                    VStack {
-                        Spacer()
-                        ProgressView("正在拉取课表…")
-                        Spacer()
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if weekCourses.isEmpty {
-                    VStack {
-                        Spacer()
-                        VStack(spacing: 12) {
-                            Image(systemName: "calendar.badge.exclamationmark")
-                                .font(.largeTitle)
-                                .foregroundStyle(.black.opacity(0.4))
-                            Text(appState.scheduleError ?? "本周没有课程")
-                                .font(.subheadline)
-                                .foregroundStyle(.black.opacity(0.7))
-                                .multilineTextAlignment(.center)
-                            Button("重新拉取") {
-                                Task { await appState.refreshSchedule() }
-                            }
-                            .buttonStyle(.bordered)
+            // 网格区（build 27 重构）：普通纵向 ScrollView 直接填满剩余空间，
+            // 没有 GeometryReader，没有 TabView。切周时 .id(week) 让 ScrollView 回到顶部。
+            if appState.scheduleLoading && appState.courses.isEmpty {
+                VStack {
+                    Spacer()
+                    ProgressView("正在拉取课表…")
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if weekCourses.isEmpty {
+                VStack {
+                    Spacer()
+                    VStack(spacing: 12) {
+                        Image(systemName: "calendar.badge.exclamationmark")
+                            .font(.largeTitle)
+                            .foregroundStyle(.black.opacity(0.4))
+                        Text(appState.scheduleError ?? "本周没有课程")
+                            .font(.subheadline)
+                            .foregroundStyle(.black.opacity(0.7))
+                            .multilineTextAlignment(.center)
+                        Button("重新拉取") {
+                            Task { await appState.refreshSchedule() }
                         }
-                        .padding()
-                        Spacer()
+                        .buttonStyle(.bordered)
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    ScrollView(.vertical, showsIndicators: false) {
-                        ScheduleGrid(
-                            courses: weekCourses,
-                            school: appState.school,
-                            rowHeight: rh
-                        )
-                        .padding(.bottom, bottomClearance)
-                    }
-                    .id(week)
-                    .refreshable {
-                        if !appState.isLoggedIn {
-                            appState.showLoginSheet = true
-                        } else {
-                            await appState.refreshSchedule()
-                        }
+                    .padding()
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView(.vertical, showsIndicators: false) {
+                    ScheduleGrid(
+                        courses: weekCourses,
+                        school: appState.school,
+                        rowHeight: rowHeightValue
+                    )
+                    .padding(.bottom, bottomClearance)
+                }
+                .id(week)
+                .refreshable {
+                    if !appState.isLoggedIn {
+                        appState.showLoginSheet = true
+                    } else {
+                        await appState.refreshSchedule()
                     }
                 }
             }
-            .highPriorityGesture(swipeGesture)
         }
         .background(Color.white)
+        .highPriorityGesture(swipeGesture)
         .onAppear { displayWeek = appState.currentWeek }
         .alert("导出功能即将上线", isPresented: $showExportSoon) {
             Button("知道了", role: .cancel) {}
@@ -228,6 +227,7 @@ struct WeekDateStrip: View {
 
 /// 周网格：11 节 × 7 天，白底 + 虚线网格 + 淡彩色块。
 /// 块内布局和 Flutter _Grid 一样：顶部是开始时间，中间是全名（换行），占两节以上再显示老师，底部 @教室（最多 3 行）。
+/// 列宽用屏幕宽直接算，不用 GeometryReader 量。
 struct ScheduleGrid: View {
     let courses: [Course]
     let school: SchoolConfig
@@ -235,6 +235,16 @@ struct ScheduleGrid: View {
 
     /// 左侧栏宽（Flutter _railWidth = 46）。
     private let gutter: CGFloat = 46
+
+    /// 每列宽 =（屏幕宽 − 两侧边距 16 − 左侧栏 46）/ 7。
+    private var columnWidth: CGFloat {
+        (UIScreen.main.bounds.width - 16 - gutter) / 7
+    }
+
+    /// 网格总宽 = 屏幕宽 − 两侧边距 16。
+    private var gridWidth: CGFloat {
+        UIScreen.main.bounds.width - 16
+    }
 
     private let pastel: [Color] = [
         Color(red: 0.98, green: 0.85, blue: 0.88),
@@ -280,82 +290,76 @@ struct ScheduleGrid: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            GeometryReader { geo in
-                let colW = (geo.size.width - gutter) / 7
-                ZStack(alignment: .topLeading) {
-                    // 横虚线（每节一条）
-                    ForEach(0...school.sectionCount, id: \.self) { r in
-                        Path { path in
-                            path.move(to: CGPoint(x: 0, y: CGFloat(r) * rowHeight))
-                            path.addLine(to: CGPoint(x: geo.size.width, y: CGFloat(r) * rowHeight))
-                        }
-                        .stroke(Color.black.opacity(0.15), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                    }
-                    // 竖虚线（每天一条）
-                    ForEach(0...7, id: \.self) { c in
-                        Path { path in
-                            path.move(to: CGPoint(x: gutter + CGFloat(c) * colW, y: 0))
-                            path.addLine(to: CGPoint(x: gutter + CGFloat(c) * colW, y: totalHeight))
-                        }
-                        .stroke(Color.black.opacity(0.15), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                    }
-                    // 左侧每节编号 + 开始时间 + 结束时间（Flutter _LeftGrid 同款）
-                    ForEach(0..<school.sectionCount, id: \.self) { s in
-                        VStack(spacing: 1) {
-                            Text("\(s + 1)")
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundStyle(.black.opacity(0.85))
-                            Text(timeText(school.startTimeList[s]))
-                                .font(.system(size: 9))
-                                .foregroundStyle(.black.opacity(0.45))
-                            Text(timeText(school.endTimeList[s]))
-                                .font(.system(size: 9))
-                                .foregroundStyle(.black.opacity(0.45))
-                        }
-                        .frame(width: gutter - 6, alignment: .center)
-                        .offset(x: 0, y: CGFloat(s) * rowHeight + 4)
-                    }
-                    // 课程块（按天分组，已合并连续节次；用开始节次做 id，同一门课分两段上时 id 不会撞）
-                    ForEach(1...7, id: \.self) { weekday in
-                        ForEach(blocks(for: weekday), id: \.start) { block in
-                            let x = gutter + CGFloat(weekday - 1) * colW + 2
-                            let y = CGFloat(block.start - 1) * rowHeight + 2
-                            let w = colW - 4
-                            let h = CGFloat(block.end - block.start + 1) * rowHeight - 4
-                            let span = block.end - block.start + 1
-                            let tall = span >= 2
-                            VStack(spacing: 2) {
-                                Text(timeText(school.startTimeList[block.start - 1]))
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(.black.opacity(0.85))
-                                Text(block.course.name)
-                                    .font(.system(size: 13, weight: .bold))
-                                    .foregroundStyle(.black.opacity(0.85))
-                                    .lineLimit(tall ? 4 : 2)
-                                    .multilineTextAlignment(.center)
-                                if tall {
-                                    Text(block.course.teacher)
-                                        .font(.system(size: 11))
-                                        .foregroundStyle(.black.opacity(0.6))
-                                        .lineLimit(1)
-                                }
-                                Text("@\(block.course.location)")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.black.opacity(0.6))
-                                    .lineLimit(3)
-                                    .multilineTextAlignment(.center)
-                            }
-                            .frame(width: w, height: h)
-                            .background(color(for: block.course.name), in: RoundedRectangle(cornerRadius: 10))
-                            .offset(x: x, y: y)
-                        }
-                    }
+        ZStack(alignment: .topLeading) {
+            // 横虚线（每节一条）
+            ForEach(0...school.sectionCount, id: \.self) { r in
+                Path { path in
+                    path.move(to: CGPoint(x: 0, y: CGFloat(r) * rowHeight))
+                    path.addLine(to: CGPoint(x: gridWidth, y: CGFloat(r) * rowHeight))
                 }
-                .frame(height: totalHeight)
+                .stroke(Color.black.opacity(0.15), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
             }
-            .frame(height: totalHeight)
+            // 竖虚线（每天一条）
+            ForEach(0...7, id: \.self) { c in
+                Path { path in
+                    path.move(to: CGPoint(x: gutter + CGFloat(c) * columnWidth, y: 0))
+                    path.addLine(to: CGPoint(x: gutter + CGFloat(c) * columnWidth, y: totalHeight))
+                }
+                .stroke(Color.black.opacity(0.15), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+            }
+            // 左侧每节编号 + 开始时间 + 结束时间（Flutter _LeftGrid 同款）
+            ForEach(0..<school.sectionCount, id: \.self) { s in
+                VStack(spacing: 1) {
+                    Text("\(s + 1)")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.black.opacity(0.85))
+                    Text(timeText(school.startTimeList[s]))
+                        .font(.system(size: 9))
+                        .foregroundStyle(.black.opacity(0.45))
+                    Text(timeText(school.endTimeList[s]))
+                        .font(.system(size: 9))
+                        .foregroundStyle(.black.opacity(0.45))
+                }
+                .frame(width: gutter - 6, alignment: .center)
+                .offset(x: 0, y: CGFloat(s) * rowHeight + 4)
+            }
+            // 课程块（按天分组，已合并连续节次；用开始节次做 id，同一门课分两段上时 id 不会撞）
+            ForEach(1...7, id: \.self) { weekday in
+                ForEach(blocks(for: weekday), id: \.start) { block in
+                    let x = gutter + CGFloat(weekday - 1) * columnWidth + 2
+                    let y = CGFloat(block.start - 1) * rowHeight + 2
+                    let w = columnWidth - 4
+                    let h = CGFloat(block.end - block.start + 1) * rowHeight - 4
+                    let span = block.end - block.start + 1
+                    let tall = span >= 2
+                    VStack(spacing: 2) {
+                        Text(timeText(school.startTimeList[block.start - 1]))
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.black.opacity(0.85))
+                        Text(block.course.name)
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(.black.opacity(0.85))
+                            .lineLimit(tall ? 4 : 2)
+                            .multilineTextAlignment(.center)
+                        if tall {
+                            Text(block.course.teacher)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.black.opacity(0.6))
+                                .lineLimit(1)
+                        }
+                        Text("@\(block.course.location)")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.black.opacity(0.6))
+                            .lineLimit(3)
+                            .multilineTextAlignment(.center)
+                    }
+                    .frame(width: w, height: h)
+                    .background(color(for: block.course.name), in: RoundedRectangle(cornerRadius: 10))
+                    .offset(x: x, y: y)
+                }
+            }
         }
+        .frame(width: gridWidth, height: totalHeight)
         .padding(.horizontal, 8)
     }
 }
