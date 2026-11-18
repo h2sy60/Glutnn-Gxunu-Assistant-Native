@@ -32,6 +32,27 @@ struct SchoolConfig: Equatable {
 
     var sectionCount: Int { startTimeList.count }
 
+    /// 生效的开始时间：有自定义（时间管理）就用自定义，否则用学校默认作息。
+    /// 自定义条数不对或格式不对就退回默认，不会崩。
+    var effectiveStartTimeList: [(Int, Int)] {
+        if let custom = CustomSectionTimes.load(for: id),
+           custom.start.count == startTimeList.count,
+           custom.start.allSatisfy({ $0.count == 2 }) {
+            return custom.start.map { ($0[0], $0[1]) }
+        }
+        return startTimeList
+    }
+
+    /// 生效的结束时间：同上。
+    var effectiveEndTimeList: [(Int, Int)] {
+        if let custom = CustomSectionTimes.load(for: id),
+           custom.end.count == endTimeList.count,
+           custom.end.allSatisfy({ $0.count == 2 }) {
+            return custom.end.map { ($0[0], $0[1]) }
+        }
+        return endTimeList
+    }
+
     static func == (lhs: SchoolConfig, rhs: SchoolConfig) -> Bool {
         lhs.id == rhs.id
     }
@@ -91,6 +112,31 @@ let schools: [SchoolConfig] = [gutSchool, gxvnuSchool]
 
 func schoolById(_ id: SchoolID) -> SchoolConfig {
     schools.first(where: { $0.id == id }) ?? gutSchool
+}
+
+// MARK: - 自定义每节上下课时间（build 60，旧项目 TimeManagePage）
+
+/// 每节上下课时间的自定义覆盖，按学校存。start/end 各 11 条 [时, 分]。
+/// 没存过就返回 nil，调用方用学校默认作息。只改时间，不改节数。
+struct CustomSectionTimes: Codable {
+    var start: [[Int]]
+    var end: [[Int]]
+
+    static func key(for schoolId: SchoolID) -> String { "CustomSectionTimes.\(schoolId.rawValue)" }
+
+    static func load(for schoolId: SchoolID) -> CustomSectionTimes? {
+        guard let data = UserDefaults.standard.data(forKey: key(for: schoolId)) else { return nil }
+        return try? JSONDecoder().decode(CustomSectionTimes.self, from: data)
+    }
+
+    static func save(_ times: CustomSectionTimes, for schoolId: SchoolID) {
+        guard let data = try? JSONEncoder().encode(times) else { return }
+        UserDefaults.standard.set(data, forKey: key(for: schoolId))
+    }
+
+    static func reset(for schoolId: SchoolID) {
+        UserDefaults.standard.removeObject(forKey: key(for: schoolId))
+    }
 }
 
 // MARK: - 课程模型（两校共用）
