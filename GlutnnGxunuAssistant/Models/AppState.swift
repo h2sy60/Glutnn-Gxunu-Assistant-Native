@@ -1,6 +1,7 @@
 import Foundation
 import Security
 import SwiftUI
+import UserNotifications
 
 // MARK: - 应用内日志（诊断用）
 //
@@ -587,6 +588,11 @@ final class AppState {
         loadScheduleAppearance()
     }
 
+    /// 重新算当前周（build 63 学期设置改开学日期/总周数后调，立即生效）。
+    func refreshCurrentWeek() {
+        currentWeek = GlutnnGxunuAssistant.currentWeek(for: school)
+    }
+
     /// 按当前日期算学年学期（8 月及以后为秋季学期）。
     func updateTermFromDate(_ date: Date = Date()) {
         let month = Calendar(identifier: .gregorian).component(.month, from: date)
@@ -1018,6 +1024,8 @@ final class AppState {
                 ScheduleStore.save(schoolId: school.id, courses: list, studentName: studentName)
             }
             if list.isEmpty { scheduleError = "本周没有课程" }
+            // build 63：拉课表成功后的联动——日历自动同步 + 上课提醒重排。
+            handleScheduleRefreshed()
         } catch let error as ScheduleError {
             AppLogger.shared.log("schedule \(school.id) error: \(error.errorDescription ?? "未知")")
             if case .sessionExpired = error {
@@ -1043,6 +1051,7 @@ final class AppState {
                             if !list.isEmpty {
                                 ScheduleStore.save(schoolId: school.id, courses: list, studentName: studentName)
                             }
+                            handleScheduleRefreshed()
                         } catch {
                             scheduleError = (error as? LocalizedError)?.errorDescription ?? "拉取课表失败"
                         }
@@ -1058,6 +1067,49 @@ final class AppState {
             }
         } catch {
             scheduleError = (error as? LocalizedError)?.errorDescription ?? "拉取课表失败"
+        }
+    }
+
+    /// 拉课表成功后的联动（build 63）：日历自动同步 + 上课提醒重排。
+    /// 用 Task 后台跑，不阻塞刷新返回；失败静默（下次刷新再试）。
+    private func handleScheduleRefreshed() {
+        guard !courses.isEmpty else { return }
+        let school = self.school
+        let courses = self.courses
+        let week = currentWeek
+        if AppSettings.autoCalendarSync {
+            Task {
+                let syncCourses: [Course]
+                if AppSettings.calendarSyncRange == 1 {
+                    // 本周起：只同步当前周及以后的课（Course.weeks 是 let，重新构造）。
+                    syncCourses = courses.compactMap { c in
+                        let weeks = c.weeks.filter { $0 >= week }
+                        guard !weeks.isEmpty else { return nil }
+                        return Course(
+                            name: c.name, teacher: c.teacher, location: c.location,
+                            weekday: c.weekday, startSection: c.startSection,
+                            endSection: c.endSection, weeks: weeks, extra: c.extra)
+                    }
+                } else {
+                    syncCourses = courses
+                }
+                _ = await CalendarExporter.export(
+                    courses: syncCourses,
+                    school: school,
+                    calendarName: "\(school.displayName) 课表",
+                    remindOn: false, remindMinutes: 0,
+                    secondRemind: false, endRemind: false,
+                    onProgress: { _, _ in }
+                )
+                AppLogger.shared.log("auto calendar sync done")
+            }
+        }
+        if AppSettings.classReminderEnabled {
+            Task {
+                await ReminderManager.rescheduleClassReminders(
+                    courses: courses, school: school,
+                    leadMinutes: AppSettings.classReminderMinutes)
+            }
         }
     }
 
@@ -1138,6 +1190,14 @@ final class AppState {
             exams = list
             AppLogger.shared.log("exams \(school.id) ok, \(list.count) items")
             if list.isEmpty { examsError = "暂无考试安排" }
+            // build 63：考试拉成功后，考试提醒开了就重排。
+            if AppSettings.examReminderEnabled {
+                let exams = list
+                Task {
+                    await ReminderManager.rescheduleExamReminders(
+                        exams: exams, leadDays: AppSettings.examReminderDays)
+                }
+            }
         } catch let error as ScheduleError {
             if case .sessionExpired = error {
                 AppLogger.shared.log("exams \(school.id) session expired, relogin once")
@@ -1175,5 +1235,227 @@ final class AppState {
                 if $0.weekday != $1.weekday { return $0.weekday < $1.weekday }
                 return $0.startSection < $1.startSection
             }
+    }
+}
+
+// MARK: - 本地提醒（build 63：上课提醒 + 考试提醒，系统本地通知，不走服务器）
+
+/// 提醒调度。通知 ID 带前缀，方便按类取消；每次重排先清掉同类旧通知再重排，
+/// 课表/考试变了也不会留过期提醒。
+enum ReminderManager {
+    static let classPrefix = "class-reminder-"
+    static let examPrefix = "exam-reminder-"
+
+    /// 请求通知权限（只在用户打开提醒开关时调）。
+    static func requestPermission() async -> Bool {
+        do {
+            return try await UNUserNotificationCenter.current()
+                .requestAuthorization(options: [.alert, .sound])
+        } catch {
+            return false
+        }
+    }
+
+    /// 按当前课表重排上课提醒：排本周 + 下周的课，提醒时间 = 上课开始 − 提前分钟。
+    /// 已过的课跳过。
+    static func rescheduleClassReminders(courses: [Course], school: SchoolConfig, leadMinutes: Int) async {
+        let center = UNUserNotificationCenter.current()
+        let pending = await center.pendingNotificationRequests()
+        let oldIds = pending.map(\.identifier).filter { $0.hasPrefix(classPrefix) }
+        center.removePendingNotificationRequests(withIdentifiers: oldIds)
+
+        let cal = Calendar(identifier: .gregorian)
+        let week = currentWeek(for: school)
+        let termStart = school.effectiveTermStartDate
+        var count = 0
+        for course in courses {
+            guard course.startSection >= 1,
+                  course.startSection <= school.effectiveStartTimeList.count else { continue }
+            for w in course.weeks where w >= week && w <= week + 1 {
+                guard let day = cal.date(byAdding: .day, value: (w - 1) * 7 + (course.weekday - 1), to: termStart),
+                      let start = cal.date(
+                          bySettingHour: school.effectiveStartTimeList[course.startSection - 1].0,
+                          minute: school.effectiveStartTimeList[course.startSection - 1].1,
+                          second: 0, of: day)
+                else { continue }
+                let fire = start.addingTimeInterval(TimeInterval(-leadMinutes * 60))
+                guard fire > Date() else { continue }
+                let content = UNMutableNotificationContent()
+                content.title = course.name
+                content.body = "第\(course.startSection)-\(course.endSection)节 · \(course.location.isEmpty ? "上课" : course.location)"
+                content.sound = .default
+                let comps = cal.dateComponents([.year, .month, .day, .hour, .minute], from: fire)
+                let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: false)
+                let id = "\(classPrefix)\(course.name)-\(w)-\(course.weekday)-\(course.startSection)"
+                try? await center.add(UNNotificationRequest(identifier: id, content: content, trigger: trigger))
+                count += 1
+            }
+        }
+        AppLogger.shared.log("class reminders scheduled: \(count)")
+    }
+
+    /// 取消全部上课提醒。
+    static func cancelClassReminders() async {
+        let center = UNUserNotificationCenter.current()
+        let pending = await center.pendingNotificationRequests()
+        let ids = pending.map(\.identifier).filter { $0.hasPrefix(classPrefix) }
+        center.removePendingNotificationRequests(withIdentifiers: ids)
+    }
+
+    /// 按待考重排考试提醒：每场考试提前 leadDays 天（考试开始 − leadDays×24h）提醒。
+    /// 时间串取前 16 位按 "yyyy-MM-dd HH:mm" 解析，解析失败的跳过；已过的提醒跳过。
+    static func rescheduleExamReminders(exams: [ExamItem], leadDays: Int) async {
+        let center = UNUserNotificationCenter.current()
+        let pending = await center.pendingNotificationRequests()
+        let oldIds = pending.map(\.identifier).filter { $0.hasPrefix(examPrefix) }
+        center.removePendingNotificationRequests(withIdentifiers: oldIds)
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        var count = 0
+        for exam in exams where !exam.isPast {
+            let prefix = String(exam.time.prefix(16))
+            guard let start = formatter.date(from: prefix) else { continue }
+            let fire = start.addingTimeInterval(TimeInterval(-leadDays * 24 * 3600))
+            guard fire > Date() else { continue }
+            let content = UNMutableNotificationContent()
+            content.title = "考试提醒"
+            content.body = "\(exam.courseName) · \(exam.time) · \(exam.location.isEmpty ? "考场待定" : exam.location)"
+            content.sound = .default
+            let comps = Calendar(identifier: .gregorian).dateComponents([.year, .month, .day, .hour, .minute], from: fire)
+            let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: false)
+            let id = "\(examPrefix)\(exam.courseName)-\(exam.time)"
+            try? await center.add(UNNotificationRequest(identifier: id, content: content, trigger: trigger))
+            count += 1
+        }
+        AppLogger.shared.log("exam reminders scheduled: \(count)")
+    }
+
+    /// 取消全部考试提醒。
+    static func cancelExamReminders() async {
+        let center = UNUserNotificationCenter.current()
+        let pending = await center.pendingNotificationRequests()
+        let ids = pending.map(\.identifier).filter { $0.hasPrefix(examPrefix) }
+        center.removePendingNotificationRequests(withIdentifiers: ids)
+    }
+}
+
+// MARK: - 数据管理 / 备份与恢复（build 63）
+
+/// 备份文件格式：全部设置 + 两校缓存课表。只含设置和课表，不含账号密码。
+struct AppBackup: Codable {
+    var version: Int = 1
+    var autoCalendarSync: Bool
+    var calendarSyncRange: Int
+    var classReminderEnabled: Bool
+    var classReminderMinutes: Int
+    var examReminderEnabled: Bool
+    var examReminderDays: Int
+    var showRecentExams: Bool
+    var showTomorrowCourses: Bool
+    var showGreeting: Bool
+    var wallpaper: Int
+    var autoRefreshOnLaunch: Bool
+    var scoreDisplayMode: Int
+    var gutCourses: [Course]
+    var gutStudentName: String
+    var gxvnuCourses: [Course]
+    var gxvnuStudentName: String
+    var gutTermStartOverride: Double?
+    var gxvnuTermStartOverride: Double?
+    var gutTotalWeeks: Int
+    var gxvnuTotalWeeks: Int
+}
+
+extension AppState {
+    /// 清除全部缓存（数据管理）：两校课表缓存文件 + 内存里的课表/成绩/考试。
+    /// 不清账号密码（Russell 永久纠正：账号密码他自己删）。
+    func clearAllCachedData() {
+        ScheduleStore.clear(schoolId: .gut)
+        ScheduleStore.clear(schoolId: .gxvnu)
+        courses = []
+        scores = []
+        exams = []
+        scoresError = nil
+        examsError = nil
+        AppLogger.shared.log("cache cleared")
+    }
+
+    /// 重新拉取全部（数据管理）：课表 + 成绩 + 考试。
+    func refreshAll() async {
+        await refreshSchedule()
+        await refreshScores()
+        await refreshExams()
+    }
+
+    /// 导出备份到临时文件（备份与恢复）：返回文件 URL，供 ShareLink 分享。
+    func exportBackup() -> URL? {
+        let gut = ScheduleStore.load(schoolId: .gut)
+        let gxvnu = ScheduleStore.load(schoolId: .gxvnu)
+        let backup = AppBackup(
+            autoCalendarSync: AppSettings.autoCalendarSync,
+            calendarSyncRange: AppSettings.calendarSyncRange,
+            classReminderEnabled: AppSettings.classReminderEnabled,
+            classReminderMinutes: AppSettings.classReminderMinutes,
+            examReminderEnabled: AppSettings.examReminderEnabled,
+            examReminderDays: AppSettings.examReminderDays,
+            showRecentExams: AppSettings.showRecentExams,
+            showTomorrowCourses: AppSettings.showTomorrowCourses,
+            showGreeting: AppSettings.showGreeting,
+            wallpaper: AppSettings.wallpaper,
+            autoRefreshOnLaunch: AppSettings.autoRefreshOnLaunch,
+            scoreDisplayMode: AppSettings.scoreDisplayMode,
+            gutCourses: gut?.courses ?? [],
+            gutStudentName: gut?.studentName ?? "",
+            gxvnuCourses: gxvnu?.courses ?? [],
+            gxvnuStudentName: gxvnu?.studentName ?? "",
+            gutTermStartOverride: AppSettings.termStartDateOverride(for: .gut)?.timeIntervalSince1970,
+            gxvnuTermStartOverride: AppSettings.termStartDateOverride(for: .gxvnu)?.timeIntervalSince1970,
+            gutTotalWeeks: AppSettings.totalWeeks(for: .gut),
+            gxvnuTotalWeeks: AppSettings.totalWeeks(for: .gxvnu)
+        )
+        guard let data = try? JSONEncoder().encode(backup) else { return nil }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("zhizhou-backup.json")
+        do {
+            try data.write(to: url, options: .atomic)
+            return url
+        } catch {
+            return nil
+        }
+    }
+
+    /// 导入备份（备份与恢复）：恢复设置 + 两校缓存课表，返回是否成功。
+    /// 导入后重新读缓存进内存；不碰账号密码。
+    func importBackup(from url: URL) -> Bool {
+        guard let data = try? Data(contentsOf: url),
+              let backup = try? JSONDecoder().decode(AppBackup.self, from: data),
+              backup.version == 1 else { return false }
+        AppSettings.autoCalendarSync = backup.autoCalendarSync
+        AppSettings.calendarSyncRange = backup.calendarSyncRange
+        AppSettings.classReminderEnabled = backup.classReminderEnabled
+        AppSettings.classReminderMinutes = backup.classReminderMinutes
+        AppSettings.examReminderEnabled = backup.examReminderEnabled
+        AppSettings.examReminderDays = backup.examReminderDays
+        AppSettings.showRecentExams = backup.showRecentExams
+        AppSettings.showTomorrowCourses = backup.showTomorrowCourses
+        AppSettings.showGreeting = backup.showGreeting
+        AppSettings.wallpaper = backup.wallpaper
+        AppSettings.autoRefreshOnLaunch = backup.autoRefreshOnLaunch
+        AppSettings.scoreDisplayMode = backup.scoreDisplayMode
+        AppSettings.setTermStartDateOverride(
+            backup.gutTermStartOverride.map { Date(timeIntervalSince1970: $0) }, for: .gut)
+        AppSettings.setTermStartDateOverride(
+            backup.gxvnuTermStartOverride.map { Date(timeIntervalSince1970: $0) }, for: .gxvnu)
+        AppSettings.setTotalWeeks(backup.gutTotalWeeks, for: .gut)
+        AppSettings.setTotalWeeks(backup.gxvnuTotalWeeks, for: .gxvnu)
+        ScheduleStore.save(schoolId: .gut, courses: backup.gutCourses, studentName: backup.gutStudentName)
+        ScheduleStore.save(schoolId: .gxvnu, courses: backup.gxvnuCourses, studentName: backup.gxvnuStudentName)
+        if let cached = ScheduleStore.load(schoolId: school.id) {
+            courses = cached.courses
+            studentName = cached.studentName
+        }
+        AppLogger.shared.log("backup imported")
+        return true
     }
 }
