@@ -309,6 +309,12 @@ final class AppState {
     var captchaDialogText = ""
     var captchaChecking = false
 
+    /// 正在登录（全量登录 / 静默重登共用）：同一时间只登一次。
+    /// 两个登录并发会互相顶掉会话（Cookie/CSRFT 串掉），表现就是
+    /// “账号密码不正确”——明明密码没错，只是两次登录把会话搞脏了。
+    /// 所有登录入口（login / 静默重登）都走这把锁。
+    private var isLoginInProgress = false
+
     init() {
         updateTermFromDate()
         // 恢复上次登录的学校 + 该校已存账号（预填，启动后自动登录见 tryAutoLogin）。
@@ -434,8 +440,11 @@ final class AppState {
             }
             return
         }
-        // 职师院：静默重登。
-        let outcome = await GXVNUService.login(studentId: studentId, password: password, captcha: "")
+        // 职师院：静默重登（串行，防并发顶掉会话）。
+        guard let outcome = await performLogin(captcha: "") else {
+            showToast(.error, "正在登录，请稍候", duration: 2)
+            return
+        }
         switch outcome {
         case .success:
             isLoggedIn = true
@@ -472,11 +481,10 @@ final class AppState {
         }
         captchaChecking = true
         defer { captchaChecking = false }
-        let outcome: LoginOutcome
-        if school.id == .gut {
-            outcome = await GUTService.login(studentId: studentId, password: password, captcha: captchaDialogText)
-        } else {
-            outcome = await GXVNUService.login(studentId: studentId, password: password, captcha: captchaDialogText)
+        guard let outcome = await performLogin(captcha: captchaDialogText) else {
+            // 已有登录在跑，等那次的结果，留在弹窗里。
+            showToast(.error, "正在登录，请稍候", duration: 2)
+            return
         }
         switch outcome {
         case .success:
@@ -509,6 +517,31 @@ final class AppState {
         }
     }
 
+    /// 串行登录（底层）：同一时间只调一次教务登录。返回 nil = 已有登录在跑，
+    /// 调用方别另起一次、也别当成失败（等那次登完再说）。
+    /// 两个登录并发会把会话顶掉（Cookie/CSRFT 串掉），表现就是“账号密码不正确”。
+    private func performLogin(captcha: String) async -> LoginOutcome? {
+        guard !isLoginInProgress else { return nil }
+        isLoginInProgress = true
+        defer { isLoginInProgress = false }
+        if school.id == .gut {
+            return await GUTService.login(studentId: studentId, password: password, captcha: captcha)
+        } else {
+            return await GXVNUService.login(studentId: studentId, password: password, captcha: captcha)
+        }
+    }
+
+    /// 静默重登（职师院，拉课表/成绩时会话过期用）：串行，同一时间只登一次。
+    /// 返回 true = 重登成功，会话已恢复。
+    private func silentReloginGXVNU() async -> Bool {
+        guard let outcome = await performLogin(captcha: "") else { return false }
+        if case .success = outcome {
+            isLoggedIn = true
+            return true
+        }
+        return false
+    }
+
     /// 登录。成功后自动拉课表。
     func login() async {
         // 校验（Flutter login.dart 同款分情况提示）。
@@ -532,11 +565,9 @@ final class AppState {
         defer { loginLoading = false }
 
         let captcha = showCaptcha ? captchaText : ""
-        let outcome: LoginOutcome
-        if school.id == .gut {
-            outcome = await GUTService.login(studentId: studentId, password: password, captcha: captcha)
-        } else {
-            outcome = await GXVNUService.login(studentId: studentId, password: password, captcha: captcha)
+        guard let outcome = await performLogin(captcha: captcha) else {
+            // 已有登录在跑，等那次的结果（它成功后 isLoggedIn 变 true，登录页自己关）。
+            return
         }
 
         switch outcome {
@@ -586,8 +617,11 @@ final class AppState {
         showCaptcha = false
         showCaptchaDialog = false
         NetworkClient.shared.cookies.clearAll()
-        // 打开登录页（整页），让用户直接输新账号。
-        showLoginSheet = true
+        // 登录页晚一拍再弹：清状态和弹整页放同一拍里会闪退（build 31 实测），
+        // 先让这一轮状态落定，下个 runloop 再弹。
+        Task { @MainActor in
+            showLoginSheet = true
+        }
     }
 
     func logout() {
@@ -660,8 +694,8 @@ final class AppState {
                 if school.id == .gut {
                     scheduleError = "登录已过期，请重新登录"
                 } else {
-                    let outcome = await GXVNUService.login(studentId: studentId, password: password, captcha: "")
-                    if case .success = outcome {
+                    // 静默重登（串行，防并发顶掉会话报“账号密码不正确”）。
+                    if await silentReloginGXVNU() {
                         do {
                             let list = try await GXVNUService.fetchSchedule(year: year, semester: semester)
                             if let name = GXVNUService.lastStudentName, !name.isEmpty {
@@ -711,8 +745,8 @@ final class AppState {
                 if school.id == .gut {
                     scoresError = "登录已过期，请重新登录"
                 } else {
-                    let outcome = await GXVNUService.login(studentId: studentId, password: password, captcha: "")
-                    if case .success = outcome {
+                    // 静默重登（串行，防并发顶掉会话报“账号密码不正确”）。
+                    if await silentReloginGXVNU() {
                         do {
                             let list = try await GXVNUService.fetchScores(year: year)
                             scores = list
