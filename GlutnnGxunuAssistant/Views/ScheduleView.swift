@@ -7,8 +7,8 @@ import EventKit // 导出到日历（EventKit）：建日历、写课程事件�
 //      “2026-11-18📍”玻璃药丸；点标题或日期都回到当前周。没有左右箭头，没有日期范围。
 // 周 strip：只有星期字（一 二 三 四 五 六 日），当天是黑色圆角 pill；
 //      showDayByWeekDay 默认 false，所以不显示日期数字。
-// 网格：白底 + 虚线网格 + 饱和彩色块 + 白字（build 46：图二旧版风，
-//      Russell 嫌淡色块黑字丑）；左栏是节号 + 开始 + 结束时间；
+// 网格：白底 + 虚线网格 + 淡彩色块 + 白字（build 47：Russell 原来的淡色，
+//      只把字改成白字，色块不动）；左栏是节号 + 开始 + 结束时间；
 //      块内是开始时间 + 全名（换行）+ 占两节以上再显示老师 + @教室（最多 3 行）。
 //      行高按屏幕高度算：（屏幕高 − 180 − 85）/ 除数，夹在 50–92；
 //      桂工除数 8.2（首屏 9 节）、职师院 9.2（首屏 10 节）。
@@ -305,19 +305,19 @@ struct WeekDateStrip: View {
 /// 周网格：11 节 × 7 天，白底 + 虚线网格 + 淡彩色块。
 /// 块内布局和 Flutter _Grid 一样：顶部是开始时间，中间是全名（换行），占两节以上再显示老师，底部 @教室（最多 3 行）。
 /// 列宽用屏幕宽直接算，不用 GeometryReader 量。
-/// 课程块配色（图二旧版风：饱和色 + 白字）。
-/// build 46：Russell 2026-11-18 17:26 说淡色块黑字丑，喜欢图二的白字——
-/// 换成饱和色（红/蓝/青/橙/紫/绿/深蓝/粉），白字才压得住。
+/// 课程块配色（Russell 原来的淡色）。
+/// build 47：Russell 2026-11-18 17:38 说 build 46 不该改色块颜色——
+/// 只改文字颜色就好。淡色恢复，文字保持白字。
 /// 名字哈希取色，同一门课颜色稳定。
 private let coursePalette: [Color] = [
-    Color(red: 0.96, green: 0.35, blue: 0.42),
-    Color(red: 0.22, green: 0.55, blue: 0.96),
-    Color(red: 0.08, green: 0.72, blue: 0.62),
-    Color(red: 0.98, green: 0.60, blue: 0.12),
-    Color(red: 0.60, green: 0.40, blue: 0.94),
-    Color(red: 0.22, green: 0.72, blue: 0.38),
-    Color(red: 0.25, green: 0.42, blue: 0.85),
-    Color(red: 0.93, green: 0.40, blue: 0.60),
+    Color(red: 0.98, green: 0.85, blue: 0.88),
+    Color(red: 0.85, green: 0.90, blue: 0.99),
+    Color(red: 0.88, green: 0.85, blue: 0.98),
+    Color(red: 0.99, green: 0.90, blue: 0.80),
+    Color(red: 0.82, green: 0.95, blue: 0.90),
+    Color(red: 0.99, green: 0.95, blue: 0.78),
+    Color(red: 0.86, green: 0.93, blue: 0.86),
+    Color(red: 0.95, green: 0.88, blue: 0.95),
 ]
 
 /// 课程名稳定取色（和 Flutter courseColor 同一思路：名字哈希）。
