@@ -366,38 +366,37 @@ final class AppState {
     /// 切学校：换配置、清登录态和验证码。已输的学号密码按学校保存，回来接着用（Flutter _switchSchool 同款）。
     /// Cookie 按 host 分桶，不用清。
     ///
-    /// 分两阶段（build 37：登录页里切学校闪退的修法）：
-    /// 同步只换 school + 恢复新学校账号；isLoggedIn / 课表缓存 / 学期周等
-    /// 派生状态放 Task 里下一拍再更新。原来一拍里同时改 school、isLoggedIn、
-    /// courses、scores、currentWeek，登录页（fullScreenCover）和底下的
-    /// TabView（含课表周分页 TabView）同时重渲染，会闪退。分开后先只换学校，
-    /// 派生状态下一拍再跟上。
+    /// 单拍原子切换（build 42，三位专家共识）：school、courses、currentWeek、
+    /// isLoggedIn 等所有 UI 状态必须在同一个 @MainActor 同步事务里一次改完
+    /// （withTransaction 关隐式动画），绝不产生“新学校 + 旧课表”的撕裂帧。
+    /// build 37 的两阶段（同步改 school、Task 里改 courses）和 build 39/41
+    /// 的锁/目标校验都没动“改了什么”，所以都没用——病根是拆分本身。
     func switchSchool(_ newSchool: SchoolConfig) {
         guard newSchool.id != school.id else { return }
+        // 取消正在进行的旧学校验证码请求，防止异步回调串台。
+        captchaTask?.cancel()
+        captchaTask = nil
         // 先把当前学校的输入存下来（哪怕还没登录成功，下次回来也能接着输）。
         if !studentId.isEmpty {
             CredentialsStore.save(schoolId: school.id, studentId: studentId, password: password)
         }
-        school = newSchool
-        // 恢复目标学校已存的账号；没有就清空输入框。
-        if let saved = CredentialsStore.load(schoolId: newSchool.id) {
-            studentId = saved.studentId
-            password = saved.password
-        } else {
-            studentId = ""
-            password = ""
-        }
-        // 派生状态下一拍再更新。连点时只让最后一次切换的 Task 落地：
-        // 早先的 Task 发现 school 已经不是自己的目标校就直接返回，
-        // 不会把旧学校的数据写到新学校上。build 39 的 Bool 锁（切一次
-        // 就闪退）已删，不用锁，用目标校验。
-        let targetSchool = newSchool
-        Task { @MainActor in
-            guard school.id == targetSchool.id else { return }
+        // 禁用隐式动画，在同一帧内原子化切换整套上下文。
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            school = newSchool
+            // 恢复目标学校已存的账号；没有就清空输入框。
+            if let saved = CredentialsStore.load(schoolId: newSchool.id) {
+                studentId = saved.studentId
+                password = saved.password
+            } else {
+                studentId = ""
+                password = ""
+            }
             isLoggedIn = false
             studentName = ""
             // 读目标学校的缓存课表（没有就空着，等登录后拉）。不直接清空：旧版切学校后首页照样显示该校缓存。
-            if let cached = ScheduleStore.load(schoolId: targetSchool.id) {
+            if let cached = ScheduleStore.load(schoolId: newSchool.id) {
                 courses = cached.courses
                 if !cached.studentName.isEmpty { studentName = cached.studentName }
             } else {
@@ -409,12 +408,42 @@ final class AppState {
             loginError = nil
             captchaImageData = nil
             captchaText = ""
-            showCaptcha = false
+            // 桂工每次登录都要验证码，行直接亮出来（图到了再填）；职师院默认不要。
+            showCaptcha = newSchool.captchaRequired
             updateTermFromDate()
+        }
+        // 若新学校需要验证码，由 switchSchool 内部统一发起唯一请求，
+        // 按钮里不要再另起 Task（双 Task 竞态改 showCaptcha 是崩溃源之一）。
+        if newSchool.captchaRequired {
+            requestCaptcha(for: newSchool.id)
         }
     }
 
     // MARK: - 验证码
+
+    /// 验证码请求单句柄（build 42）：切学校时先 cancel 旧请求，再由
+    /// switchSchool 内部统一发起唯一请求。@ObservationIgnored——改它
+    /// 不触发视图重绘。按钮里不要再另起 fetchCaptcha 的 Task。
+    @ObservationIgnored private var captchaTask: Task<Void, Never>?
+
+    /// 统一的验证码请求入口（build 42）：取到图后只有学校还是目标校
+    /// 才写回去，防止切校途中旧学校的图串到新学校上。
+    func requestCaptcha(for target: SchoolID? = nil) {
+        let targetId = target ?? school.id
+        captchaTask?.cancel()
+        captchaTask = Task { @MainActor in
+            captchaText = ""
+            let image: Data?
+            if targetId == .gut {
+                image = await GUTService.fetchCaptchaImage()
+            } else {
+                image = await GXVNUService.fetchCaptchaImage()
+            }
+            guard !Task.isCancelled, school.id == targetId else { return }
+            captchaImageData = image
+            showCaptcha = image != nil
+        }
+    }
 
     /// 取验证码图（桂工登录前必取；职师院按需取）。
     func fetchCaptcha() async {
