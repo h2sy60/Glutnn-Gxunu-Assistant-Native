@@ -183,6 +183,29 @@ enum ScheduleError: Error, LocalizedError {
     }
 }
 
+// MARK: - 提示条（Toast）
+
+/// 提示条类型（原版 CustomSnackBar 的 type）：error 红 !、success 绿 ✓、loading 蓝 🔗、info 星星。
+enum ToastKind {
+    case error, success, loading, info
+}
+
+/// 提示条的点击动作：目前只有“需要验证”——点按后弹登录页重新验证。
+enum ToastAction {
+    case showLogin
+}
+
+/// 一颗提示条：类型 + 文字 + 显示秒数 + 可选点击动作。
+struct Toast: Identifiable, Equatable {
+    let id = UUID()
+    var kind: ToastKind
+    var text: String
+    var duration: TimeInterval
+    var action: ToastAction?
+
+    static func == (lhs: Toast, rhs: Toast) -> Bool { lhs.id == rhs.id }
+}
+
 // MARK: - App 状态（唯一数据源）
 //
 // 账号按学校存在 UserDefaults（学号）+ Keychain（密码），登录成功即保存；
@@ -222,6 +245,44 @@ final class AppState {
     /// 是否弹出登录页（全屏，可关闭；旧版登录页就是 push 进来、右上角有关闭钮的页面，不是门禁）。
     /// 首页三个胶囊和“请先登录”在未登录时把它置 true；登录成功后 LoginView 自己关掉。
     var showLoginSheet = false
+
+    // MARK: - 提示条（Toast，原版 bars.dart CustomSnackBar）
+
+    /// 原版提示条：液态玻璃药丸（圆角 25），左图标 + 右文字，浮在页面底部、
+    /// 低栏上方 10pt，左右留白 100，几秒后自动消失。类型：error 红 !（错误）、
+    /// success 绿 ✓（成功）、loading 蓝 🔗（进行中）、info 星星（提示）。
+    /// “需要验证”是带点击动作的版本：文字变蓝色，点按后回调（原版是
+    /// pushAndRemoveUntil 回首页重新登录；原生是弹登录页）。
+    var toast: Toast?
+
+    func showToast(_ kind: ToastKind, _ text: String, duration: TimeInterval = 2, action: ToastAction? = nil) {
+        toastTask?.cancel()
+        let t = Toast(kind: kind, text: text, duration: duration, action: action)
+        toast = t
+        let id = t.id
+        toastTask = Task {
+            try? await Task.sleep(for: .seconds(duration))
+            if toast?.id == id { toast = nil }
+        }
+    }
+
+    func dismissToast() {
+        toastTask?.cancel()
+        toast = nil
+    }
+
+    /// 点提示条：有动作（需要验证）就执行动作，否则只是关掉。
+    func handleToastTap() {
+        guard let t = toast else { return }
+        if t.action == .showLogin {
+            dismissToast()
+            showLoginSheet = true
+        } else {
+            dismissToast()
+        }
+    }
+
+    private var toastTask: Task<Void, Never>?
 
     /// 验证码（桂工每次都要；职师院按需）。图片数据 + 用户输入。
     var captchaImageData: Data?
