@@ -365,6 +365,13 @@ final class AppState {
 
     /// 切学校：换配置、清登录态和验证码。已输的学号密码按学校保存，回来接着用（Flutter _switchSchool 同款）。
     /// Cookie 按 host 分桶，不用清。
+    ///
+    /// 分两阶段（build 37：登录页里切学校闪退的修法）：
+    /// 同步只换 school + 恢复新学校账号；isLoggedIn / 课表缓存 / 学期周等
+    /// 派生状态放 Task 里下一拍再更新。原来一拍里同时改 school、isLoggedIn、
+    /// courses、scores、currentWeek，登录页（fullScreenCover）和底下的
+    /// TabView（含课表周分页 TabView）同时重渲染，会闪退。分开后先只换学校，
+    /// 派生状态下一拍再跟上。
     func switchSchool(_ newSchool: SchoolConfig) {
         guard newSchool.id != school.id else { return }
         // 先把当前学校的输入存下来（哪怕还没登录成功，下次回来也能接着输）。
@@ -372,7 +379,6 @@ final class AppState {
             CredentialsStore.save(schoolId: school.id, studentId: studentId, password: password)
         }
         school = newSchool
-        isLoggedIn = false
         // 恢复目标学校已存的账号；没有就清空输入框。
         if let saved = CredentialsStore.load(schoolId: newSchool.id) {
             studentId = saved.studentId
@@ -381,22 +387,26 @@ final class AppState {
             studentId = ""
             password = ""
         }
-        studentName = ""
-        // 读目标学校的缓存课表（没有就空着，等登录后拉）。不直接清空：旧版切学校后首页照样显示该校缓存。
-        if let cached = ScheduleStore.load(schoolId: newSchool.id) {
-            courses = cached.courses
-            if !cached.studentName.isEmpty { studentName = cached.studentName }
-        } else {
-            courses = []
+        // 派生状态下一拍再更新（见上）。
+        Task { @MainActor in
+            isLoggedIn = false
+            studentName = ""
+            // 读目标学校的缓存课表（没有就空着，等登录后拉）。不直接清空：旧版切学校后首页照样显示该校缓存。
+            if let cached = ScheduleStore.load(schoolId: newSchool.id) {
+                courses = cached.courses
+                if !cached.studentName.isEmpty { studentName = cached.studentName }
+            } else {
+                courses = []
+            }
+            scores = []
+            scoresError = nil
+            scheduleError = nil
+            loginError = nil
+            captchaImageData = nil
+            captchaText = ""
+            showCaptcha = false
+            updateTermFromDate()
         }
-        scores = []
-        scoresError = nil
-        scheduleError = nil
-        loginError = nil
-        captchaImageData = nil
-        captchaText = ""
-        showCaptcha = false
-        updateTermFromDate()
     }
 
     // MARK: - 验证码
