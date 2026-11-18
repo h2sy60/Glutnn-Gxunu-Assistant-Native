@@ -20,6 +20,13 @@ import SwiftUI
 //      行高和列宽全用 UIScreen.main.bounds 直接算，
 //      网格区就是普通 VStack + ScrollView，不要再把 GeometryReader 加回来，
 //      也不要再把 TabView 加回来。
+// 下坠教训 2（build 27 也栽了，2026-11-18 10:01 Russell：“还是这样”）：
+//      零 GeometryReader、零 TabView 还是下坠——GeometryReader 也不是病根。
+//      剩下最后一个结构差别：首页和我的（显示正常）根都是 NavigationStack，
+//      课表是唯一一个裸 VStack 直接挂在 TabView 下的页。
+//      build 28：课表也包一层 NavigationStack（navigationBarHidden），
+//      和首页/我的同结构。如果这版还下坠，病根就不在课表页自身，
+//      而在 ContentView/TabView 或更高层，得做最小复现二分。
 
 struct ScheduleView: View {
     @Environment(AppState.self) private var appState
@@ -81,7 +88,8 @@ struct ScheduleView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        NavigationStack {
+            VStack(spacing: 0) {
             // 顶栏（原版 ScheduleTopBar）：左“第 X 周 周Y”，右“导出”+“日期📍”玻璃药丸。
             HStack {
                 Button {
@@ -179,12 +187,14 @@ struct ScheduleView: View {
                     }
                 }
             }
-        }
-        .background(Color.white)
-        .highPriorityGesture(swipeGesture)
-        .onAppear { displayWeek = appState.currentWeek }
-        .alert("导出功能即将上线", isPresented: $showExportSoon) {
-            Button("知道了", role: .cancel) {}
+            }
+            .background(Color.white)
+            .navigationBarHidden(true)
+            .highPriorityGesture(swipeGesture)
+            .onAppear { displayWeek = appState.currentWeek }
+            .alert("导出功能即将上线", isPresented: $showExportSoon) {
+                Button("知道了", role: .cancel) {}
+            }
         }
     }
 }
