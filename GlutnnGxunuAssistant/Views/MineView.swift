@@ -110,6 +110,23 @@ struct MineView: View {
                                 .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 26))
                             }
 
+                            // 关于（build 49）：作者信息、版本、检测更新、作者 GitHub
+                            NavigationLink(destination: AboutView()) {
+                                HStack {
+                                    Image(systemName: "info.circle")
+                                        .foregroundStyle(.white)
+                                    Text("关于")
+                                        .foregroundStyle(.white)
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .foregroundStyle(.white.opacity(0.7))
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 14)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 26))
+                            }
+
                             // 导出日志
                             glassCard {
                                 HStack {
@@ -345,5 +362,168 @@ struct ExamsView: View {
         .onChange(of: appState.exams.count) { _, _ in
             exams = appState.exams
         }
+    }
+}
+
+// MARK: - 关于页（build 49）：作者信息、版本、检测更新、作者 GitHub
+//
+// “我的”页 → 关于：显示作者（Russell / h2sy60，点按跳作者 GitHub
+// 主页）、当前版本、检测更新（查 GitHub 最新 Release，比对版本号，
+// 有新版弹提示去下载，没有就提示已是最新）。
+
+struct AboutView: View {
+    @Environment(AppState.self) private var appState
+    @Environment(\.openURL) private var openURL
+
+    /// 是否正在检测更新（转圈 + 禁点）。
+    @State private var checkingUpdate = false
+    /// 是否弹出“发现新版本”提示。
+    @State private var showUpdateAlert = false
+    /// 检测到的最新版本号（去掉 v 前缀，如 1.0.1）。
+    @State private var latestVersion = ""
+    /// 检测到的最新 Release 页面。
+    @State private var latestReleaseURL: URL?
+
+    /// 当前版本（Info.plist CFBundleShortVersionString）：如 1.0.0。
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
+    }
+    /// 当前构建号（Info.plist CFBundleVersion）：如 49。
+    private var appBuild: String {
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—"
+    }
+
+    /// 作者 GitHub 主页。
+    private static let authorGitHubURL = URL(string: "https://github.com/h2sy60")!
+    /// 仓库 Releases 页（检测更新没取到 html_url 时的兜底）。
+    private static let releasesURL = URL(string: "https://github.com/h2sy60/Glutnn-Gxunu-Assistant-Native/releases")!
+
+    var body: some View {
+        ZStack {
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
+
+            List {
+                Section {
+                    // 应用名 + 版本
+                    HStack {
+                        Image(systemName: "graduationcap.fill")
+                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("桂工课程助手")
+                            Text("版本 \(appVersion) (build \(appBuild))")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    // 作者：点按跳作者 GitHub 主页
+                    Button {
+                        openURL(Self.authorGitHubURL)
+                    } label: {
+                        HStack {
+                            Image(systemName: "person.crop.circle")
+                                .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Russell")
+                                Text("作者 · h2sy60")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .foregroundStyle(.primary)
+                }
+
+                Section {
+                    // 检测更新
+                    Button {
+                        Task { await checkForUpdate() }
+                    } label: {
+                        HStack {
+                            Text("检测更新")
+                            Spacer()
+                            if checkingUpdate {
+                                ProgressView()
+                            }
+                        }
+                    }
+                    .foregroundStyle(.primary)
+                    .disabled(checkingUpdate)
+                } footer: {
+                    Text("新版本发布在 GitHub Releases；检测到新版本后会提示下载。")
+                }
+            }
+            .listStyle(.insetGrouped)
+        }
+        .navigationTitle("关于")
+        .navigationBarTitleDisplayMode(.inline)
+        .alert("发现新版本 \(latestVersion)", isPresented: $showUpdateAlert) {
+            Button("去下载") {
+                openURL(latestReleaseURL ?? Self.releasesURL)
+            }
+            Button("稍后", role: .cancel) { }
+        } message: {
+            Text("当前版本 \(appVersion)，去 GitHub 下载最新版。")
+        }
+    }
+
+    /// 检测更新：GET GitHub 最新 Release，比对 tag 与当前版本。
+    private func checkForUpdate() async {
+        checkingUpdate = true
+        defer { checkingUpdate = false }
+        guard let url = URL(string: "https://api.github.com/repos/h2sy60/Glutnn-Gxunu-Assistant-Native/releases/latest") else {
+            appState.showToast(.error, "检查更新失败，请稍后重试", duration: 3)
+            return
+        }
+        var request = URLRequest(url: url)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                appState.showToast(.error, "检查更新失败，请稍后重试", duration: 3)
+                return
+            }
+            // 还没发过 Release（404）：没有可更新的版本，当作已是最新。
+            if http.statusCode == 404 {
+                appState.showToast(.success, "已是最新版本", duration: 2)
+                return
+            }
+            guard http.statusCode == 200,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let tag = json["tag_name"] as? String else {
+                appState.showToast(.error, "检查更新失败，请稍后重试", duration: 3)
+                return
+            }
+            let latest = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+            if isNewerVersion(latest, than: appVersion) {
+                latestVersion = latest
+                if let html = json["html_url"] as? String, let releaseURL = URL(string: html) {
+                    latestReleaseURL = releaseURL
+                } else {
+                    latestReleaseURL = Self.releasesURL
+                }
+                showUpdateAlert = true
+            } else {
+                appState.showToast(.success, "已是最新版本", duration: 2)
+            }
+        } catch {
+            appState.showToast(.error, "检查更新失败，请稍后重试", duration: 3)
+        }
+    }
+
+    /// 语义版本比较：latest 是否比 current 新（按 . 分段逐段比数字）。
+    private func isNewerVersion(_ latest: String, than current: String) -> Bool {
+        let l = latest.split(separator: ".").compactMap { Int($0) }
+        let c = current.split(separator: ".").compactMap { Int($0) }
+        for i in 0..<max(l.count, c.count) {
+            let lv = i < l.count ? l[i] : 0
+            let cv = i < c.count ? c[i] : 0
+            if lv != cv { return lv > cv }
+        }
+        return false
     }
 }
