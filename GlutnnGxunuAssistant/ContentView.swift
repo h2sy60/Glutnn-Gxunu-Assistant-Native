@@ -27,6 +27,59 @@ struct ContentView: View {
         )) {
             LoginView()
         }
+        // 提示条（原版 CustomSnackBar）：玻璃药丸浮在底部、低栏上方，点按执行动作或关掉。
+        .overlay(alignment: .bottom) {
+            if let toast = appState.toast {
+                ToastPill(toast: toast) {
+                    appState.handleToastTap()
+                }
+                .padding(.bottom, 100)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.25), value: appState.toast?.id)
+    }
+}
+
+/// 提示条药丸（原版 CustomSnackBar 同款）：液态玻璃圆角 25，左图标 + 右文字。
+/// “需要验证”的文字是蓝色的、可点的；其余是黑色 87。
+struct ToastPill: View {
+    let toast: Toast
+    let onTap: () -> Void
+
+    private var iconName: String {
+        switch toast.kind {
+        case .error: return "exclamationmark.circle"
+        case .success: return "checkmark.circle"
+        case .loading: return "link"
+        case .info: return "star"
+        }
+    }
+
+    private var iconColor: Color {
+        switch toast.kind {
+        case .error: return .red
+        case .success: return .green
+        case .loading: return .blue
+        case .info: return .orange
+        }
+    }
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: 10) {
+                Image(systemName: iconName)
+                    .font(.system(size: 20))
+                    .foregroundStyle(iconColor)
+                Text(toast.text)
+                    .font(.system(size: 15))
+                    .foregroundStyle(toast.action == nil ? Color.black.opacity(0.87) : Color.blue)
+                    .multilineTextAlignment(.center)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+        }
+        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 25))
     }
 }
 
