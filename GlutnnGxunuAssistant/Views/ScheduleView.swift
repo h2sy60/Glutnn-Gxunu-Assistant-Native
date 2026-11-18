@@ -67,7 +67,10 @@ struct ScheduleView: View {
     @State private var displayWeek: Int = 0
     @State private var showExportPage = false
 
-    private var week: Int { displayWeek == 0 ? appState.currentWeek : displayWeek }
+    private var week: Int {
+        let raw = displayWeek == 0 ? appState.currentWeek : displayWeek
+        return min(max(raw, 1), 20) // 严格钳在 1...20，防止 UIPageViewController 越界（build 42）
+    }
     private var isCurrentWeek: Bool { week == appState.currentWeek }
 
     /// 某一周的课（TabView 每页一份）。
@@ -188,33 +191,39 @@ struct ScheduleView: View {
                         )) {
                             ForEach(1...20, id: \.self) { w in
                                 let list = courses(for: w)
-                                if list.isEmpty {
-                                    VStack(spacing: 12) {
-                                        Image(systemName: "calendar.badge.exclamationmark")
-                                            .font(.largeTitle)
-                                            .foregroundStyle(.black.opacity(0.4))
-                                        Text(appState.scheduleError ?? "本周没有课程")
-                                            .font(.subheadline)
-                                            .foregroundStyle(.black.opacity(0.7))
-                                            .multilineTextAlignment(.center)
-                                        Button("重新拉取") {
-                                            Task { await appState.refreshSchedule() }
+                                // 单一 ZStack 包裹 if/else，只在最外层打唯一一个 .tag(w)：
+                                // 原先两个分支各打 .tag(w)，换校时某周从“有课”变“无课”，
+                                // 同一 tag 绑在结构身份不同的分支上，UIPageViewController
+                                // 会销毁当前页控制器并触发崩溃（专家意见，build 42）。
+                                ZStack {
+                                    if list.isEmpty {
+                                        VStack(spacing: 12) {
+                                            Image(systemName: "calendar.badge.exclamationmark")
+                                                .font(.largeTitle)
+                                                .foregroundStyle(.black.opacity(0.4))
+                                            Text(appState.scheduleError ?? "本周没有课程")
+                                                .font(.subheadline)
+                                                .foregroundStyle(.black.opacity(0.7))
+                                                .multilineTextAlignment(.center)
+                                            Button("重新拉取") {
+                                                Task { await appState.refreshSchedule() }
+                                            }
+                                            .buttonStyle(.bordered)
                                         }
-                                        .buttonStyle(.bordered)
+                                        .frame(maxWidth: .infinity, minHeight: 300)
+                                    } else {
+                                        ScheduleGrid(
+                                            courses: list,
+                                            school: appState.school,
+                                            rowHeight: rowHeightValue
+                                        )
+                                        .padding(.bottom, bottomClearance)
                                     }
-                                    .frame(maxWidth: .infinity, minHeight: 300)
-                                    .tag(w)
-                                } else {
-                                    ScheduleGrid(
-                                        courses: list,
-                                        school: appState.school,
-                                        rowHeight: rowHeightValue
-                                    )
-                                    .padding(.bottom, bottomClearance)
-                                    .tag(w)
                                 }
+                                .tag(w)
                             }
                         }
+                        .id(appState.school.id) // 换校时干净重建分页器（build 42）
                         .tabViewStyle(.page(indexDisplayMode: .never))
                         .frame(height: rowHeightValue * CGFloat(appState.school.sectionCount) + bottomClearance)
                     }
@@ -229,6 +238,10 @@ struct ScheduleView: View {
         // 原版那种浅色玻璃；整 App 强制深色模式会让它俩变成深灰玻璃，丑。
         .preferredColorScheme(.light)
         .onAppear { displayWeek = appState.currentWeek }
+        // 换校时 displayWeek 跟着新学校的当前周走（配合 TabView 的 .id 重建，build 42）。
+        .onChange(of: appState.school.id) { _, _ in
+            displayWeek = appState.currentWeek
+        }
         .fullScreenCover(isPresented: $showExportPage) {
             ScheduleExportView()
         }
