@@ -6,7 +6,9 @@ import UserNotifications
 // MARK: - 应用内日志（诊断用）
 //
 // 原生版之前没有日志功能，出了问题只能靠猜。关键步骤都记下来，
-// 在「我的」页点「导出日志」可以分享出去。只记在内存里，不写磁盘，
+// 在「我的」页点「导出日志」可以分享出去。
+// build 64 修：原来只记内存，app 一关日志就全没了，导出是空的。
+// 现在每行写磁盘（app.log），启动时读回来接着记，重启还在。
 // 可变状态全由 NSLock 保护，所以标 @unchecked Sendable（编译器无法自行证明）。
 // 不含密码（密码只传给教务服务器，绝不记日志）。
 final class AppLogger: @unchecked Sendable {
@@ -20,17 +22,51 @@ final class AppLogger: @unchecked Sendable {
         return f
     }()
 
+    /// 日志文件（Documents/app.log）。
+    private static var logFileURL: URL {
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        return dir.appendingPathComponent("app.log")
+    }
+
+    private init() {
+        // 启动时把磁盘上的旧日志读回来，接着记。
+        if let data = try? Data(contentsOf: Self.logFileURL),
+           let text = String(data: data, encoding: .utf8) {
+            lines = text.components(separatedBy: "\n").filter { !$0.isEmpty }
+            if lines.count > maxLines { lines.removeFirst(lines.count - maxLines) }
+        }
+    }
+
     func log(_ message: String) {
         lock.lock()
         defer { lock.unlock() }
         lines.append("[\(formatter.string(from: Date()))] \(message)")
         if lines.count > maxLines { lines.removeFirst(lines.count - maxLines) }
+        // 写回磁盘（全量写，日志量小，一次最多 2000 行）。
+        let text = lines.joined(separator: "\n") + "\n"
+        try? text.write(to: Self.logFileURL, atomically: true, encoding: .utf8)
     }
 
+    /// 导出文本：带表头，永远不为空（没日志时写明原因）。
     func exportText() -> String {
         lock.lock()
         defer { lock.unlock() }
-        return lines.joined(separator: "\n")
+        var header = "周周有善 日志\n"
+        header += "导出时间：\(formatter.string(from: Date()))\n"
+        header += "共 \(lines.count) 条\n"
+        header += "---\n"
+        if lines.isEmpty {
+            return header + "（暂无日志：app 刚启动，还没产生任何记录。做一次刷新或登录后再导出。）"
+        }
+        return header + lines.joined(separator: "\n")
+    }
+
+    /// 清空日志（内存 + 磁盘文件一起清）。
+    func clear() {
+        lock.lock()
+        defer { lock.unlock() }
+        lines.removeAll()
+        try? FileManager.default.removeItem(at: Self.logFileURL)
     }
 }
 
@@ -586,6 +622,8 @@ final class AppState {
         }
         // 读当前学校 + 学号的课表外观（build 48）。
         loadScheduleAppearance()
+        // build 64：启动记一条，日志里能看到每次启动的学校和登录态。
+        AppLogger.shared.log("app start: school=\(school.id.rawValue) loggedIn=\(isLoggedIn) week=\(currentWeek) cachedCourses=\(courses.count)")
     }
 
     /// 重新算当前周（build 63 学期设置改开学日期/总周数后调，立即生效）。
@@ -617,6 +655,8 @@ final class AppState {
     /// 的锁/目标校验都没动“改了什么”，所以都没用——病根是拆分本身。
     func switchSchool(_ newSchool: SchoolConfig) {
         guard newSchool.id != school.id else { return }
+        // build 64：切学校记一条。
+        AppLogger.shared.log("switch school: \(school.id.rawValue) -> \(newSchool.id.rawValue)")
         // 取消正在进行的旧学校验证码请求，防止异步回调串台。
         captchaTask?.cancel()
         captchaTask = nil
@@ -945,10 +985,12 @@ final class AppState {
     /// 凭据/缓存/课表/成绩/Cookie，跟弹页和登录页的预填抢状态。什么都不清，
     /// 就没东西可抢。不要再加回任何清理——这是 Russell 的决定。
     func switchAccount() {
+        AppLogger.shared.log("switch account: school=\(school.id.rawValue)")
         showLoginSheet = true
     }
 
     func logout() {
+        AppLogger.shared.log("logout: school=\(school.id.rawValue)")
         isLoggedIn = false
         studentId = ""
         password = ""
@@ -993,6 +1035,8 @@ final class AppState {
         isRefreshingSchedule = true
         scheduleLoading = true
         scheduleError = nil
+        // build 64：刷新开始记一条，不然只记成功/失败，日志里看不到“点了刷新”。
+        AppLogger.shared.log("schedule refresh start: school=\(school.id.rawValue) year=\(year) semester=\(semester)")
         defer {
             scheduleLoading = false
             isRefreshingSchedule = false
