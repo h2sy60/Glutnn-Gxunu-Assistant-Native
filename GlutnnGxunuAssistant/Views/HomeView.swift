@@ -1,15 +1,14 @@
 import SwiftUI
 
 /// 首页（Flutter 版布局）：壁纸上的纯白文字 + 玻璃只做功能层。
-/// 问候 + 日期/学期 + 下节课胶囊（两行）+ 三个操作胶囊 + 今天/明天课程（按节展开，每节一行，带状态）。
+/// 问候 + 日期/学期 + 下节课胶囊（两行）+ 操作胶囊（一行：刷新/成绩/考试/更多，
+/// 更多仅职师院）+ 今天/明天课程（按节展开，每节一行，带状态）。
 struct HomeView: View {
     @Environment(AppState.self) private var appState
     @Binding var selectedTab: Int
     @State private var showExams = false
     @State private var showScores = false
-    /// 更多功能（build 50，职师院专属）：学分 / 教学执行计划 / 更多。
-    @State private var showCredits = false
-    @State private var showTeachingPlan = false
+    /// 更多功能（职师院专属）：待办、评教、学分、教学计划、个人信息、学籍预警。
     @State private var showMore = false
     /// 刷新防刷计数（原版 home.dart refresh() 同款）：点 7 下“你太快了!”，
     /// 8 下以上“你慢一点!”+ 5 秒冷却。
@@ -207,16 +206,16 @@ struct HomeView: View {
     /// 操作胶囊（玻璃圆角矩形 + 图标 + 文字）。
     private func actionChip(icon: String, label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 Image(systemName: icon)
-                    .font(.system(size: 20))
+                    .font(.system(size: 18))
                     .foregroundStyle(.white)
                 Text(label)
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(.white)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 14)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 12)
         }
         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 20))
     }
@@ -403,8 +402,10 @@ struct HomeView: View {
                         .padding(.horizontal, 20)
                     }
 
-                    // 第一行操作胶囊（居中；未登录时点它们弹登录页，登录后才做事）
-                    HStack(spacing: 12) {
+                    // 操作胶囊（一行，居中；未登录时点它们弹登录页，登录后才做事）。
+                    // 刷新 / 成绩 / 考试三项两校都有；更多（待办、评教、学分、
+                    // 教学计划、个人信息、学籍预警）是职师院专属，桂工没有对应接口，不显示。
+                    HStack(spacing: 8) {
                         actionChip(icon: "arrow.clockwise", label: "刷新") {
                             Task { await refreshWithFeedback() }
                         }
@@ -422,30 +423,7 @@ struct HomeView: View {
                                 showExams = true
                             }
                         }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.top, 16)
-                    .padding(.horizontal, 20)
-
-                    // 第二行操作胶囊（build 50，职师院专属，居中）：
-                    // 学分（已选课程与总学分）/ 教学（教学执行计划）/ 更多
-                    // （待办、评教、个人信息、学籍预警等）。桂工没有对应接口，不显示。
-                    if appState.school.id == .gxvnu {
-                        HStack(spacing: 12) {
-                            actionChip(icon: "creditcard.fill", label: "学分") {
-                                if !appState.isLoggedIn {
-                                    appState.showLoginSheet = true
-                                } else {
-                                    showCredits = true
-                                }
-                            }
-                            actionChip(icon: "book.fill", label: "教学") {
-                                if !appState.isLoggedIn {
-                                    appState.showLoginSheet = true
-                                } else {
-                                    showTeachingPlan = true
-                                }
-                            }
+                        if appState.school.id == .gxvnu {
                             actionChip(icon: "ellipsis.circle.fill", label: "更多") {
                                 if !appState.isLoggedIn {
                                     appState.showLoginSheet = true
@@ -454,10 +432,10 @@ struct HomeView: View {
                                 }
                             }
                         }
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .padding(.top, 12)
-                        .padding(.horizontal, 20)
                     }
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.top, 16)
+                    .padding(.horizontal, 16)
 
                     // 今日课程（Russell 2026-11-18 10:56：改回今日课程/明日课程）
                     Text("今日课程")
@@ -535,12 +513,6 @@ struct HomeView: View {
             }
             .navigationDestination(isPresented: $showScores) {
                 ScoreView()
-            }
-            .navigationDestination(isPresented: $showCredits) {
-                GXVNUCreditsView()
-            }
-            .navigationDestination(isPresented: $showTeachingPlan) {
-                GXVNUTeachingPlanView()
             }
             .navigationDestination(isPresented: $showMore) {
                 GXVNUMoreView()
