@@ -1,6 +1,6 @@
 # Glutnn-Gxunu-Assistant-Native
 
-桂工课程助手 —— SwiftUI（iOS 26，Liquid Glass 用系统 `.glassEffect()`）。
+周周有善 —— SwiftUI（iOS 26，Liquid Glass 用系统 `.glassEffect()`）。
 
 ## 截图
 
@@ -70,8 +70,8 @@
 - 语言：Swift 6，SwiftUI
 - Deployment Target：iOS 26.0（需要 Xcode 26）
 - Bundle ID：`com.h2sy60.GlutnnGxunuAssistant`
-- 显示名：桂工课程助手
-- 版本：1.0.0（build 50）
+- 显示名：周周有善
+- 版本：1.0.0（build 51）
 
 ## 构建（未签名 IPA）
 
