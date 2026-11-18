@@ -120,6 +120,43 @@ enum CredentialsStore {
     }
 }
 
+// MARK: - 课表缓存（修“不登录看不到首页”）
+//
+// 旧版 Flutter 启动就读本地课表文件（readSchedule），不用登录也能看首页。
+// 原生版之前课表只在内存里，退出就没了，首页只能是一片空。
+// 现在每次拉课表成功就写一份 JSON 到沙盒（按学校分文件），启动和切学校时读出来。
+// 退出登录时清掉缓存，换账号不会看到上一个人的课。
+enum ScheduleStore {
+    private struct SavedSchedule: Codable {
+        var courses: [Course]
+        var studentName: String
+    }
+
+    private static func fileURL(schoolId: SchoolID) -> URL {
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        return dir.appendingPathComponent("schedule_\(schoolId.rawValue).json")
+    }
+
+    /// 拉课表成功后调：把课表 + 名字写进磁盘。
+    static func save(schoolId: SchoolID, courses: [Course], studentName: String) {
+        let payload = SavedSchedule(courses: courses, studentName: studentName)
+        guard let data = try? JSONEncoder().encode(payload) else { return }
+        try? data.write(to: fileURL(schoolId: schoolId), options: .atomic)
+    }
+
+    /// 启动 / 切学校时调：读出缓存（没有返回 nil）。
+    static func load(schoolId: SchoolID) -> (courses: [Course], studentName: String)? {
+        guard let data = try? Data(contentsOf: fileURL(schoolId: schoolId)),
+              let payload = try? JSONDecoder().decode(SavedSchedule.self, from: data) else { return nil }
+        return (payload.courses, payload.studentName)
+    }
+
+    /// 退出登录时调：清掉该校缓存。
+    static func clear(schoolId: SchoolID) {
+        try? FileManager.default.removeItem(at: fileURL(schoolId: schoolId))
+    }
+}
+
 // MARK: - 登录 / 课表结果
 
 enum LoginOutcome {
@@ -158,8 +195,6 @@ final class AppState {
     /// 当前学校，默认桂工。
     var school: SchoolConfig = gutSchool
     var isLoggedIn = false
-    /// 启动时正在恢复已存会话（自动登录中），ContentView 用它显示等待而不是闪登录页。
-    var isRestoringSession = false
     var studentId = ""
     var studentName = ""
     /// 密码只存 Keychain，供自动重登用。
@@ -184,6 +219,10 @@ final class AppState {
     var loginLoading = false
     var loginError: String?
 
+    /// 是否弹出登录页（全屏，可关闭；旧版登录页就是 push 进来、右上角有关闭钮的页面，不是门禁）。
+    /// 首页三个胶囊和“请先登录”在未登录时把它置 true；登录成功后 LoginView 自己关掉。
+    var showLoginSheet = false
+
     /// 验证码（桂工每次都要；职师院按需）。图片数据 + 用户输入。
     var captchaImageData: Data?
     var captchaText = ""
@@ -199,6 +238,14 @@ final class AppState {
         if let saved = CredentialsStore.load(schoolId: school.id) {
             studentId = saved.studentId
             password = saved.password
+            // 旧版语义：启动时“有保存的学号”就算已登录（main.dart），会话过期了拉数据时再发现、再重登。
+            // 不是“这次会话已验证”。这样首页三个胶囊才知道该直接刷新还是弹登录页。
+            isLoggedIn = true
+        }
+        // 读本地课表缓存（旧版 readSchedule）：不登录也能看首页。
+        if let cached = ScheduleStore.load(schoolId: school.id) {
+            courses = cached.courses
+            if !cached.studentName.isEmpty { studentName = cached.studentName }
         }
     }
 
@@ -235,7 +282,13 @@ final class AppState {
             password = ""
         }
         studentName = ""
-        courses = []
+        // 读目标学校的缓存课表（没有就空着，等登录后拉）。不直接清空：旧版切学校后首页照样显示该校缓存。
+        if let cached = ScheduleStore.load(schoolId: newSchool.id) {
+            courses = cached.courses
+            if !cached.studentName.isEmpty { studentName = cached.studentName }
+        } else {
+            courses = []
+        }
         scores = []
         scoresError = nil
         scheduleError = nil
@@ -322,6 +375,8 @@ final class AppState {
         password = ""
         studentName = ""
         courses = []
+        // 退出登录清掉该校课表缓存，换账号不会看到上一个人的课。
+        ScheduleStore.clear(schoolId: school.id)
         scores = []
         scoresError = nil
         scheduleError = nil
@@ -334,21 +389,17 @@ final class AppState {
         CredentialsStore.clearAll()
     }
 
-    /// 启动恢复：有已存账号就自动登录一次。
-    /// 桂工每次都要验证码，自动登录走不通（login 里 captcha 为空会失败），
-    /// 此时只预填账号 + 自动取一张验证码图，等用户输验证码点登录；
-    /// 职师院默认不要验证码，能直接登进去。失败不报错，落回登录页。
+    /// 启动恢复：有已存账号才做事。
+    /// 职师院默认不要验证码：启动时静默登录一次，顺带拉新课表（旧版“只登一遍”）。
+    /// 桂工每次都要验证码：启动时不尝试登录——空验证码登录必失败，还会给账号记一次失败；
+    /// 只取一张验证码图，登录页打开时直接能用。课表先显示缓存，等用户点刷新再登录。
     func tryAutoLogin() async {
-        guard !isLoggedIn, !studentId.isEmpty, !password.isEmpty else { return }
-        isRestoringSession = true
-        defer { isRestoringSession = false }
-        await login()
-        // 桂工自动登录失败只是因为缺验证码：预填还在，取一张图等用户输。
-        if !isLoggedIn, school.id == .gut {
-            loginError = nil
+        guard !studentId.isEmpty, !password.isEmpty else { return }
+        if school.id == .gxvnu {
+            await login()
+        } else {
             if captchaImageData == nil { await fetchCaptcha() }
         }
-        // 职师院自动登录若因服务器要求验证码而失败，login() 已把 loginError 置为“请输入验证码”并取了图。
     }
 
     // MARK: - 课表
@@ -373,35 +424,34 @@ final class AppState {
             }
             courses = list
             AppLogger.shared.log("schedule \(school.id) ok, \(list.count) courses")
+            // 拉成功就写缓存，下次启动不登录也能看首页。
+            ScheduleStore.save(schoolId: school.id, courses: list, studentName: studentName)
             if list.isEmpty { scheduleError = "本周没有课程" }
         } catch let error as ScheduleError {
             AppLogger.shared.log("schedule \(school.id) error: \(error.errorDescription ?? "未知")")
             if case .sessionExpired = error {
-                // 会话过期：自动重登一次，再拉一次课表。
-                let outcome: LoginOutcome
+                // 会话过期：职师院可静默重登一次再拉；桂工每次都要验证码，
+                // 空验证码重登必失败还记一次失败，直接落回登录页等用户输验证码。
                 if school.id == .gut {
-                    outcome = await GUTService.login(studentId: studentId, password: password, captcha: "")
+                    isLoggedIn = false
+                    scheduleError = "登录已过期，请重新登录"
                 } else {
-                    outcome = await GXVNUService.login(studentId: studentId, password: password, captcha: "")
-                }
-                if case .success = outcome {
-                    do {
-                        let list: [Course]
-                        if school.id == .gut {
-                            list = try await GUTService.fetchSchedule(year: year, semester: semester)
-                        } else {
-                            list = try await GXVNUService.fetchSchedule(year: year, semester: semester)
+                    let outcome = await GXVNUService.login(studentId: studentId, password: password, captcha: "")
+                    if case .success = outcome {
+                        do {
+                            let list = try await GXVNUService.fetchSchedule(year: year, semester: semester)
                             if let name = GXVNUService.lastStudentName, !name.isEmpty {
                                 studentName = name
                             }
+                            courses = list
+                            ScheduleStore.save(schoolId: school.id, courses: list, studentName: studentName)
+                        } catch {
+                            scheduleError = (error as? LocalizedError)?.errorDescription ?? "拉取课表失败"
                         }
-                        courses = list
-                    } catch {
-                        scheduleError = (error as? LocalizedError)?.errorDescription ?? "拉取课表失败"
+                    } else {
+                        isLoggedIn = false
+                        scheduleError = "登录已过期，请重新登录"
                     }
-                } else {
-                    isLoggedIn = false
-                    scheduleError = "登录已过期，请重新登录"
                 }
             } else {
                 scheduleError = error.errorDescription
@@ -433,28 +483,24 @@ final class AppState {
         } catch let error as ScheduleError {
             if case .sessionExpired = error {
                 AppLogger.shared.log("scores \(school.id) session expired, relogin once")
-                let outcome: LoginOutcome
+                // 桂工重登要验证码，直接落回登录页；职师院静默重登一次。
                 if school.id == .gut {
-                    outcome = await GUTService.login(studentId: studentId, password: password, captcha: "")
-                } else {
-                    outcome = await GXVNUService.login(studentId: studentId, password: password, captcha: "")
-                }
-                if case .success = outcome {
-                    do {
-                        let list: [CourseScore]
-                        if school.id == .gut {
-                            list = try await GUTService.fetchScores()
-                        } else {
-                            list = try await GXVNUService.fetchScores(year: year)
-                        }
-                        scores = list
-                        if list.isEmpty { scoresError = "暂无成绩" }
-                    } catch {
-                        scoresError = (error as? LocalizedError)?.errorDescription ?? "拉取成绩失败"
-                    }
-                } else {
                     isLoggedIn = false
                     scoresError = "登录已过期，请重新登录"
+                } else {
+                    let outcome = await GXVNUService.login(studentId: studentId, password: password, captcha: "")
+                    if case .success = outcome {
+                        do {
+                            let list = try await GXVNUService.fetchScores(year: year)
+                            scores = list
+                            if list.isEmpty { scoresError = "暂无成绩" }
+                        } catch {
+                            scoresError = (error as? LocalizedError)?.errorDescription ?? "拉取成绩失败"
+                        }
+                    } else {
+                        isLoggedIn = false
+                        scoresError = "登录已过期，请重新登录"
+                    }
                 }
             } else {
                 scoresError = error.errorDescription
