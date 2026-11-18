@@ -281,8 +281,22 @@ enum GXVNUService {
                     let probeHtml = String(data: probeData, encoding: .utf8) ?? ""
                     if probeResponse.statusCode == 200 && !probeHtml.isEmpty && !isLoginPage(probeHtml) {
                         probeLoggedIn = true
+                    } else if probeResponse.statusCode == 301 || probeResponse.statusCode == 302 {
+                        // build 45：已认证会话 GET 登录页会被 302 到菜单页，
+                        // 这是登录成功，不是网络错误（build 43 只认 200，
+                        // 302 空正文被误判成 probeNetworkError → “网络错误，
+                        // 请重试”，Russell 2026-11-18 17:06 职师院登录报的就是它）。
+                        // 302 回登录页 = 真失败；302 到别处 = 已登录。
+                        let probeLocation = (probeResponse.value(forHTTPHeaderField: "Location") ?? "").lowercased()
+                        if !probeLocation.isEmpty && !probeLocation.contains("login") {
+                            probeLoggedIn = true
+                        } else if probeLocation.contains("login") {
+                            // 还是登录页 = 真失败，两个标志都 false。
+                        } else {
+                            probeNetworkError = true
+                        }
                     } else if !isLoginPage(probeHtml) {
-                        // 非 200 或空正文，且不是登录页 = 探针本身失败。
+                        // 非 200/302 或空正文，且不是登录页 = 探针本身失败。
                         probeNetworkError = true
                     }
                     // 是登录页 = 真失败，两个标志都 false，继续走下面分支。
