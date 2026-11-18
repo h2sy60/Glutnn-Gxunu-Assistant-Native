@@ -280,11 +280,12 @@ enum GUTService {
     /// 查成绩（全部学年学期：year/term 留空）。列与 Flutter 版一致：
     /// td[2]=课程号、td[3]=课程名、td[4]=老师、td[5]=成绩、td[6]=绩点、
     /// td[7]=学分、td[9]=含“免考”时成绩记“合格”、td[11]=课程类别。
-    static func fetchScores() async throws -> [CourseScore] {
+    static func fetchScores(year: Int? = nil, term: String? = nil) async throws -> [CourseScore] {
         // build 43：砍掉事前 isLoggedIn() 探针，直接发业务请求，拿响应后检查。
+        // build 53：year/term 为筛选（nil = 全部）。桂工学期码暂按 1=第一学期、2=第二学期。
         let form = [
-            "year": "",
-            "term": "",
+            "year": year.map(String.init) ?? "",
+            "term": term ?? "",
             "prop": "",
             "groupName": "",
             "para": "0",

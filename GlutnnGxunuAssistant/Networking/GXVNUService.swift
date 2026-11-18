@@ -439,8 +439,8 @@ enum GXVNUService {
     /// 查成绩（build 43：必须用 POST！GET 必然返回 0 条）。
     /// xnm="" 且 xqm="" 时，正方一次 POST 直接返回大学四年全部成绩，
     /// 无需 5 年 × 2 学期循环（专家意见，whx1024/zfn_api12）。
-    static func fetchScores(year: Int) async throws -> [CourseScore] {
-        // year 参数保留（兼容旧调用），实际一次拉全部学年。
+    static func fetchScores(year: Int?, term: String? = nil) async throws -> [CourseScore] {
+        // year/term 为筛选条件（nil = 全部）。xnm 传学年（如 2026），xqm 传学期码（第一学期 3、第二学期 12）。
         let gnmkdm = school.gnmkdm["成绩"] ?? "N305005"
         let endpoints = [
             "/cjcx/cjcx_cxDgXscj.html",
@@ -448,8 +448,8 @@ enum GXVNUService {
         ]
         let nowMs = "\(Date().millisecondsSinceEpoch)"
         let formBody: [String: String] = [
-            "xnm": "",
-            "xqm": "",
+            "xnm": year.map(String.init) ?? "",
+            "xqm": term ?? "",
             "_search": "false",
             "nd": nowMs,
             "queryModel.showCount": "500",
@@ -1026,7 +1026,8 @@ enum GXVNUService {
                 courseCount: num("kcs"),
                 hours: num("jhrs"),
                 totalCredits: (item["zdxf"] as? String) ?? "",
-                category: (item["dlbs"] as? String) ?? ""
+                category: (item["dlbs"] as? String) ?? "",
+                planId: (item["jxzxjhxx_id"] as? String) ?? ""
             )
         }
     }
@@ -1071,6 +1072,208 @@ enum GXVNUService {
             )
         }
     }
+
+// MARK: - 毕业进度（build 53）
+
+/// 教学执行计划课程明细：POST /jxzxjhgl/jxzxjhkcxx_cxJxzxjhkcxxIndex.html?doType=query&gnmkdm=N153540。
+/// body 需 jxzxjhxx_id（计划 ID，来自 fetchTeachingPlan 的 planId）。showCount 拉全量。
+/// 返回全部计划课程（含 KCXZMC 课程性质、XF 学分、JYXDXNM/JYXDXQM 建议修读学年/学期）。
+static func fetchPlanCourses(planId: String) async throws -> [GXVNUPlanCourse] {
+    let gnmkdm = school.gnmkdm["教学计划"] ?? "N153540"
+    guard let url = school.url("/jxzxjhgl/jxzxjhkcxx_cxJxzxjhkcxxIndex.html", query: ["doType": "query", "gnmkdm": gnmkdm]) else {
+        throw ScheduleError.network("计划课程接口地址无效")
+    }
+    var form = gridForm(showCount: "100")
+    form["jxzxjhxx_id"] = planId
+    let items = try await postGrid(url: url, form: form)
+    return items.compactMap { item in
+        let name = (item["kcmc"] as? String) ?? ""
+        guard !name.isEmpty else { return nil }
+        func num(_ key: String) -> Double {
+            if let n = item[key] as? NSNumber { return n.doubleValue }
+            if let s = item[key] as? String { return Double(s) ?? 0 }
+            return 0
+        }
+        return GXVNUPlanCourse(
+            courseName: name,
+            courseCode: (item["kch"] as? String) ?? "",
+            category: (item["kcxzmc"] as? String) ?? "",
+            credit: num("xf"),
+            year: (item["jyxdxnm"] as? String) ?? "",
+            term: (item["jyxdxqm"] as? String) ?? ""
+        )
+    }
+}
+
+// MARK: - 通知公告（build 53）
+
+/// 通知公告列表：POST /xtgl/index_cxNews.html?localeKey=zh_CN&gnmkdm=index（无 body），返回 HTML。
+/// 解析 list-group 里的 <a>：href 含 xwbh、title 属性为标题、块内日期 YYYY-MM-DD。
+/// 三者按出现顺序一一对应（实测各 32 条）。
+static func fetchNotifications() async throws -> [GXVNUNotification] {
+    guard let url = school.url("/xtgl/index_cxNews.html", query: ["localeKey": "zh_CN", "gnmkdm": "index"]) else {
+        throw ScheduleError.network("通知接口地址无效")
+    }
+    let (data, response) = try await client.postForm(url, form: [:], headers: browserHeaders)
+    if response.statusCode == 301 || response.statusCode == 302 {
+        throw ScheduleError.sessionExpired
+    }
+    guard response.statusCode == 200 else {
+        throw ScheduleError.network("通知接口返回 HTTP \(response.statusCode)")
+    }
+    let html = String(data: data, encoding: .utf8) ?? ""
+    if isLoginPage(html) { throw ScheduleError.sessionExpired }
+    let linkPattern = #"<a[^>]*href="[^"]*xwbh=([A-F0-9]+)[^"]*"[^>]*title="([^"]*)"[^>]*>"#
+    guard let linkRegex = try? NSRegularExpression(pattern: linkPattern, options: []),
+          let dateRegex = try? NSRegularExpression(pattern: #"20\d\d-\d\d-\d\d"#, options: []) else {
+        throw ScheduleError.parseError
+    }
+    let ns = html as NSString
+    let linkMatches = linkRegex.matches(in: html, options: [], range: NSRange(location: 0, length: ns.length))
+    let dateMatches = dateRegex.matches(in: html, options: [], range: NSRange(location: 0, length: ns.length))
+    var result: [GXVNUNotification] = []
+    for (index, m) in linkMatches.enumerated() {
+        guard index < dateMatches.count else { break }
+        let xwbh = ns.substring(with: m.range(at: 1))
+        var title = ns.substring(with: m.range(at: 2))
+        title = title.replacingOccurrences(of: "&nbsp;", with: " ")
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { continue }
+        let date = ns.substring(with: dateMatches[index].range)
+        result.append(GXVNUNotification(xwbh: xwbh, title: title, date: date))
+    }
+    return result
+}
+
+/// 通知详情：GET /xtgl/xwck_ckXw.html?xwbh=<id>&doType=save，返回 HTML，去标签后取纯文本。
+static func fetchNotificationDetail(xwbh: String) async throws -> String {
+    guard let url = school.url("/xtgl/xwck_ckXw.html", query: ["xwbh": xwbh, "doType": "save"]) else {
+        throw ScheduleError.network("通知详情地址无效")
+    }
+    let (data, response) = try await client.get(url, headers: browserHeaders)
+    if response.statusCode == 301 || response.statusCode == 302 {
+        throw ScheduleError.sessionExpired
+    }
+    guard response.statusCode == 200 else {
+        throw ScheduleError.network("通知详情返回 HTTP \(response.statusCode)")
+    }
+    let html = String(data: data, encoding: .utf8) ?? ""
+    if isLoginPage(html) { throw ScheduleError.sessionExpired }
+    return stripHTML(html)
+}
+
+/// 去 HTML 标签，转纯文本（通知详情用）。
+private static func stripHTML(_ html: String) -> String {
+    var text = html
+    if let re = try? NSRegularExpression(pattern: #"<(script|style)[\s\S]*?</\1>"#, options: .caseInsensitive) {
+        text = re.stringByReplacingMatches(in: text, options: [], range: NSRange(text.startIndex..., in: text), withTemplate: "")
+    }
+    text = text.replacingOccurrences(of: "<br", with: "\n<br")
+    text = text.replacingOccurrences(of: "</p>", with: "\n")
+    text = text.replacingOccurrences(of: "</div>", with: "\n")
+    if let re = try? NSRegularExpression(pattern: "<[^>]+>", options: []) {
+        text = re.stringByReplacingMatches(in: text, options: [], range: NSRange(text.startIndex..., in: text), withTemplate: "")
+    }
+    text = text
+        .replacingOccurrences(of: "&nbsp;", with: " ")
+        .replacingOccurrences(of: "&amp;", with: "&")
+        .replacingOccurrences(of: "&lt;", with: "<")
+        .replacingOccurrences(of: "&gt;", with: ">")
+        .replacingOccurrences(of: "&quot;", with: "\"")
+        .replacingOccurrences(of: "&#39;", with: "'")
+    let lines = text.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    return lines.joined(separator: "\n")
+}
+
+// MARK: - 培养方案 PDF（build 53）
+
+/// 培养方案 PDF：先 GET 个人信息页取隐藏字段 pyfaxx_id，再 GET pyfaxxck_dyPyfaxx.html 下载 PDF。
+/// 返回 PDF 原始数据（调用方用 PDFKit 展示）。
+static func fetchTrainingPlanPDF() async throws -> Data {
+    let gnmkdm = school.gnmkdm["个人信息"] ?? "N100801"
+    guard let profileURL = school.url("/xsxxxggl/xsgrxxwh_cxXsgrxx.html", query: ["gnmkdm": gnmkdm]) else {
+        throw ScheduleError.network("个人信息页地址无效")
+    }
+    let (profileData, profileResponse) = try await client.get(profileURL, headers: browserHeaders)
+    if profileResponse.statusCode == 301 || profileResponse.statusCode == 302 {
+        throw ScheduleError.sessionExpired
+    }
+    guard profileResponse.statusCode == 200 else {
+        throw ScheduleError.network("个人信息页返回 HTTP \(profileResponse.statusCode)")
+    }
+    let profileHTML = String(data: profileData, encoding: .utf8) ?? ""
+    if isLoginPage(profileHTML) { throw ScheduleError.sessionExpired }
+    guard let idRegex = try? NSRegularExpression(pattern: #"id="pyfaxx_id"[^>]*value="([^"]+)""#, options: []),
+          let m = idRegex.firstMatch(in: profileHTML, options: [], range: NSRange(profileHTML.startIndex..., in: profileHTML)),
+          let range = Range(m.range(at: 1), in: profileHTML) else {
+        throw ScheduleError.parseError
+    }
+    let pyfaId = String(profileHTML[range])
+    guard let pdfURL = school.url("/pyfagl/pyfaxxck_dyPyfaxx.html", query: ["fromXh_id": "", "id": pyfaId, "gnmkdm": gnmkdm]) else {
+        throw ScheduleError.network("培养方案地址无效")
+    }
+    let (pdfData, pdfResponse) = try await client.get(pdfURL, headers: browserHeaders)
+    if pdfResponse.statusCode == 301 || pdfResponse.statusCode == 302 {
+        throw ScheduleError.sessionExpired
+    }
+    guard pdfResponse.statusCode == 200 else {
+        throw ScheduleError.network("培养方案返回 HTTP \(pdfResponse.statusCode)")
+    }
+    if let text = String(data: pdfData, encoding: .utf8), isLoginPage(text) {
+        throw ScheduleError.sessionExpired
+    }
+    guard pdfData.count > 100 else {
+        throw ScheduleError.parseError
+    }
+    return pdfData
+}
+
+// MARK: - 毕设（build 53）
+
+/// 毕设已选题数：POST /xsbysjgl/xsxt_getYxts.html?gnmkdm=N532530，返回 "0" 这样的 JSON 字符串。
+static func fetchThesisCount() async throws -> Int {
+    let gnmkdm = school.gnmkdm["毕设"] ?? "N532530"
+    guard let url = school.url("/xsbysjgl/xsxt_getYxts.html", query: ["gnmkdm": gnmkdm]) else {
+        throw ScheduleError.network("毕设接口地址无效")
+    }
+    let (data, response) = try await client.postForm(url, form: [:], headers: browserHeaders)
+    if response.statusCode == 301 || response.statusCode == 302 {
+        throw ScheduleError.sessionExpired
+    }
+    guard response.statusCode == 200 else {
+        throw ScheduleError.network("毕设接口返回 HTTP \(response.statusCode)")
+    }
+    let text = String(data: data, encoding: .utf8) ?? ""
+    if isLoginPage(text) { throw ScheduleError.sessionExpired }
+    let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+    return Int(cleaned) ?? 0
+}
+
+/// 毕设选题列表：POST /xsbysjgl/xsxt_cxXsxtIndex.html?doType=query&gnmkdm=N532530，jqGrid。大一为空。
+static func fetchThesisTopics() async throws -> [GXVNUThesisTopic] {
+    let gnmkdm = school.gnmkdm["毕设"] ?? "N532530"
+    guard let url = school.url("/xsbysjgl/xsxt_cxXsxtIndex.html", query: ["doType": "query", "gnmkdm": gnmkdm]) else {
+        throw ScheduleError.network("毕设选题地址无效")
+    }
+    let items = try await postGrid(url: url, form: gridForm(showCount: "100"))
+    return items.compactMap { item in
+        func pick(_ keys: [String]) -> String {
+            for k in keys {
+                if let s = item[k] as? String, !s.isEmpty { return s }
+                if let n = item[k] as? NSNumber { return n.stringValue }
+            }
+            return ""
+        }
+        let title = pick(["tm", "ktmc", "bt", "tmmc"])
+        guard !title.isEmpty else { return nil }
+        return GXVNUThesisTopic(
+            title: title,
+            teacher: pick(["jsmc", "zdjs", "jzgmc", "dsxm"]),
+            status: pick(["zt", "ztmc", "shzt"])
+        )
+    }
+}
 }
 
 // MARK: - 更多功能模型（build 50，职师院专属）
@@ -1127,6 +1330,7 @@ struct GXVNUTeachingPlan: Identifiable {
     var hours: Int
     var totalCredits: String
     var category: String
+    var planId: String = ""
 }
 
 /// 学籍预警（一条 = 一个学期的预警，含风险课程）。
@@ -1160,6 +1364,35 @@ struct GXVNUAcademicIDs {
     var major: String
     var grade: String
     var className: String
+}
+
+// MARK: - build 53 模型
+
+/// 教学执行计划课程明细（毕业进度用）。
+struct GXVNUPlanCourse: Identifiable {
+    let id = UUID()
+    var courseName: String
+    var courseCode: String
+    var category: String
+    var credit: Double
+    var year: String
+    var term: String
+}
+
+/// 通知公告条目。
+struct GXVNUNotification: Identifiable {
+    let id = UUID()
+    var xwbh: String
+    var title: String
+    var date: String
+}
+
+/// 毕设选题条目。
+struct GXVNUThesisTopic: Identifiable {
+    let id = UUID()
+    var title: String
+    var teacher: String
+    var status: String
 }
 
 private extension Date {
