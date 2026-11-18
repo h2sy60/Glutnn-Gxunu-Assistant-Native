@@ -42,6 +42,12 @@ struct GlutnnGxunuAssistantApp: App {
                 ContentView()
                     .environment(appState)
             }
+            // 全 App 强制深色：白字只在深色底上才看得见（自查：不强制深色 + 浅色模式 = 全白看不见）。
+            .preferredColorScheme(.dark)
+            .task {
+                // 启动恢复：有已存账号就自动登录（职师院直接进，桂工预填 + 取验证码图）。
+                await appState.tryAutoLogin()
+            }
         }
     }
 }

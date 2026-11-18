@@ -1,6 +1,8 @@
 import SwiftUI
 
-// MARK: - 课表：Flutter 版周网格（壁纸 + 淡彩色块 + 每节时间）
+// MARK: - 课表（Flutter 版白底 WakeUp 风）：白底 + 顶栏 + 周日期条 + 左右划切周 + 按学校算行高
+//
+// 颜色和 Flutter 一致：白底黑字，淡彩色块；不是壁纸深色风。
 
 struct ScheduleView: View {
     @Environment(AppState.self) private var appState
@@ -12,85 +14,165 @@ struct ScheduleView: View {
         appState.courses.filter { $0.weeks.contains(week) }
     }
 
-    var body: some View {
-        VStack(spacing: 0) {
-            // 周切换玻璃胶囊
-            HStack {
-                Button {
-                    if week > 1 { displayWeek = week - 1 }
-                } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .padding(6)
-                }
-                .disabled(week <= 1)
-                Spacer()
-                Text("第 \(week) 周")
-                    .font(.system(size: 20, weight: .bold))
-                    .foregroundStyle(.white)
-                Spacer()
-                Button {
-                    if week < 20 { displayWeek = week + 1 }
-                } label: {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .padding(6)
-                }
-                .disabled(week >= 20)
-            }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 10)
-            .glassEffect(.regular, in: Capsule())
-            .padding(.top, 8)
-            .padding(.horizontal, 20)
+    /// 本周周一（termStartDate 就是第 1 周的周一）。
+    private func monday(of week: Int) -> Date {
+        let cal = Calendar(identifier: .gregorian)
+        return cal.date(byAdding: .day, value: (week - 1) * 7, to: appState.school.termStartDate) ?? Date()
+    }
 
-            if appState.scheduleLoading && appState.courses.isEmpty {
-                Spacer()
-                ProgressView("正在拉取课表…")
-                    .foregroundStyle(.white)
-                Spacer()
-            } else if weekCourses.isEmpty {
-                Spacer()
-                VStack(spacing: 12) {
-                    Image(systemName: "calendar.badge.exclamationmark")
-                        .font(.largeTitle)
-                        .foregroundStyle(.white.opacity(0.7))
-                    Text(appState.scheduleError ?? "本周没有课程")
-                        .font(.subheadline)
-                        .foregroundStyle(.white.opacity(0.8))
-                        .multilineTextAlignment(.center)
-                    Button("重新拉取") {
-                        Task { await appState.refreshSchedule() }
+    /// 本周起止日期（“11月16日 - 11月22日”）。
+    private var weekRangeText: String {
+        let cal = Calendar(identifier: .gregorian)
+        let mon = monday(of: week)
+        let sun = cal.date(byAdding: .day, value: 6, to: mon) ?? mon
+        let fmt: (Date) -> String = { d in
+            "\(cal.component(.month, from: d))月\(cal.component(.day, from: d))日"
+        }
+        return "\(fmt(mon)) - \(fmt(sun))"
+    }
+
+    /// 行高按学校算（Flutter schedule.dart 同款）：桂工除数 8.2（首屏 9 节）、职师院 9.2（首屏 10 节），夹在 50–92。
+    private func rowHeight(for availableHeight: CGFloat) -> CGFloat {
+        let divisor: CGFloat = appState.school.id == .gut ? 8.2 : 9.2
+        return min(92, max(50, availableHeight / divisor))
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            VStack(spacing: 0) {
+                // 顶栏：第 X 周 + 日期范围 + 左右切周
+                HStack {
+                    Button {
+                        if week > 1 { displayWeek = week - 1 }
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(.black)
+                            .padding(6)
                     }
-                    .buttonStyle(.bordered)
-                    .tint(.white)
+                    .disabled(week <= 1)
+                    Spacer()
+                    VStack(spacing: 2) {
+                        Text("第 \(week) 周")
+                            .font(.system(size: 20, weight: .bold))
+                            .foregroundStyle(.black)
+                        Text(weekRangeText)
+                            .font(.system(size: 13))
+                            .foregroundStyle(.black.opacity(0.6))
+                    }
+                    Spacer()
+                    Button {
+                        if week < 20 { displayWeek = week + 1 }
+                    } label: {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(.black)
+                            .padding(6)
+                    }
+                    .disabled(week >= 20)
                 }
-                .padding()
-                Spacer()
-            } else {
-                ScrollView {
-                    ScheduleGrid(courses: weekCourses, school: appState.school)
-                        .padding(.top, 14)
-                        .padding(.bottom, 140)
-                }
-                .refreshable {
-                    await appState.refreshSchedule()
+                .padding(.horizontal, 20)
+                .padding(.top, 8)
+                .padding(.bottom, 6)
+
+                // 周日期条：星期 + 日期，当天是黑色圆角 pill
+                WeekDateStrip(week: week, monday: monday(of: week))
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 6)
+
+                if appState.scheduleLoading && appState.courses.isEmpty {
+                    Spacer()
+                    ProgressView("正在拉取课表…")
+                    Spacer()
+                } else if weekCourses.isEmpty {
+                    Spacer()
+                    VStack(spacing: 12) {
+                        Image(systemName: "calendar.badge.exclamationmark")
+                            .font(.largeTitle)
+                            .foregroundStyle(.black.opacity(0.4))
+                        Text(appState.scheduleError ?? "本周没有课程")
+                            .font(.subheadline)
+                            .foregroundStyle(.black.opacity(0.7))
+                            .multilineTextAlignment(.center)
+                        Button("重新拉取") {
+                            Task { await appState.refreshSchedule() }
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .padding()
+                    Spacer()
+                } else {
+                    // 左右划动切周（每页一个周网格）
+                    TabView(selection: $displayWeek) {
+                        ForEach(1...20, id: \.self) { w in
+                            ScrollView {
+                                ScheduleGrid(
+                                    courses: appState.courses.filter { $0.weeks.contains(w) },
+                                    school: appState.school,
+                                    rowHeight: rowHeight(for: geo.size.height)
+                                )
+                                .padding(.top, 6)
+                                .padding(.bottom, 140)
+                            }
+                            .tag(w)
+                        }
+                    }
+                    .tabViewStyle(.page(indexDisplayMode: .never))
                 }
             }
+            .background(Color.white)
         }
         .onAppear { displayWeek = appState.currentWeek }
+        .refreshable {
+            await appState.refreshSchedule()
+        }
     }
 }
 
-/// 周网格：11 节 × 7 天，淡彩色块 + 左侧每节开始时间。
+/// 周日期条：周一到周日，星期 + 日期；当天黑色 pill 白字。
+struct WeekDateStrip: View {
+    let week: Int
+    let monday: Date
+
+    private let weekdayChars = ["一", "二", "三", "四", "五", "六", "日"]
+
+    private func date(of offset: Int) -> Date {
+        Calendar(identifier: .gregorian).date(byAdding: .day, value: offset, to: monday) ?? monday
+    }
+
+    private func isToday(_ date: Date) -> Bool {
+        Calendar(identifier: .gregorian).isDateInToday(date)
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Color.clear.frame(width: 42)
+            ForEach(0..<7, id: \.self) { i in
+                let d = date(of: i)
+                let today = isToday(d)
+                VStack(spacing: 2) {
+                    Text(weekdayChars[i])
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(today ? .white : .black)
+                    Text("\(Calendar(identifier: .gregorian).component(.day, from: d))")
+                        .font(.system(size: 13))
+                        .foregroundStyle(today ? .white : .black.opacity(0.6))
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+                .background(today ? Color.black : Color.clear, in: RoundedRectangle(cornerRadius: 10))
+            }
+        }
+    }
+}
+
+/// 周网格：11 节 × 7 天，白底 + 虚线网格 + 淡彩色块（块内含时间）。
 struct ScheduleGrid: View {
     let courses: [Course]
     let school: SchoolConfig
+    let rowHeight: CGFloat
 
     private let gutter: CGFloat = 42
-    private let rowHeight: CGFloat = 52
 
     private let pastel: [Color] = [
         Color(red: 0.98, green: 0.85, blue: 0.88),
@@ -118,42 +200,37 @@ struct ScheduleGrid: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // 星期标题行
-            HStack(spacing: 0) {
-                Color.clear.frame(width: gutter)
-                ForEach(1...7, id: \.self) { d in
-                    Text(["一", "二", "三", "四", "五", "六", "日"][d - 1])
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity)
-                }
-            }
-            .padding(.bottom, 6)
-
             GeometryReader { geo in
                 let colW = (geo.size.width - gutter) / 7
                 ZStack(alignment: .topLeading) {
-                    // 横线（每节一条）
+                    // 横虚线（每节一条）
                     ForEach(0...school.sectionCount, id: \.self) { r in
-                        Rectangle()
-                            .fill(Color.white.opacity(0.12))
-                            .frame(width: geo.size.width, height: 1)
-                            .offset(x: 0, y: CGFloat(r) * rowHeight)
+                        Path { path in
+                            path.move(to: CGPoint(x: 0, y: CGFloat(r) * rowHeight))
+                            path.addLine(to: CGPoint(x: geo.size.width, y: CGFloat(r) * rowHeight))
+                        }
+                        .stroke(Color.black.opacity(0.15), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
                     }
-                    // 竖线（每天一条）
+                    // 竖虚线（每天一条）
                     ForEach(0...7, id: \.self) { c in
-                        Rectangle()
-                            .fill(Color.white.opacity(0.12))
-                            .frame(width: 1, height: totalHeight)
-                            .offset(x: gutter + CGFloat(c) * colW, y: 0)
+                        Path { path in
+                            path.move(to: CGPoint(x: gutter + CGFloat(c) * colW, y: 0))
+                            path.addLine(to: CGPoint(x: gutter + CGFloat(c) * colW, y: totalHeight))
+                        }
+                        .stroke(Color.black.opacity(0.15), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
                     }
-                    // 左侧每节开始时间
+                    // 左侧每节编号 + 开始时间
                     ForEach(0..<school.sectionCount, id: \.self) { s in
-                        Text(timeText(school.startTimeList[s]))
-                            .font(.system(size: 11))
-                            .foregroundStyle(.white.opacity(0.75))
-                            .frame(width: gutter - 6, alignment: .trailing)
-                            .offset(x: 0, y: CGFloat(s) * rowHeight + 4)
+                        VStack(spacing: 1) {
+                            Text("\(s + 1)")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.black.opacity(0.7))
+                            Text(timeText(school.startTimeList[s]))
+                                .font(.system(size: 10))
+                                .foregroundStyle(.black.opacity(0.5))
+                        }
+                        .frame(width: gutter - 6, alignment: .center)
+                        .offset(x: 0, y: CGFloat(s) * rowHeight + 4)
                     }
                     // 课程块
                     ForEach(courses) { course in
@@ -161,12 +238,18 @@ struct ScheduleGrid: View {
                         let y = CGFloat(course.startSection - 1) * rowHeight + 2
                         let w = colW - 4
                         let h = CGFloat(course.endSection - course.startSection + 1) * rowHeight - 4
+                        let start = timeText(school.startTimeList[course.startSection - 1])
+                        let end = timeText(school.endTimeList[course.endSection - 1])
                         VStack(spacing: 2) {
                             Text(course.name)
                                 .font(.system(size: 12, weight: .semibold))
                                 .foregroundStyle(.black.opacity(0.85))
                                 .lineLimit(3)
                                 .multilineTextAlignment(.center)
+                            Text("\(start)-\(end)")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.black.opacity(0.6))
+                                .lineLimit(1)
                             if h > 60 {
                                 Text(course.location)
                                     .font(.system(size: 10))

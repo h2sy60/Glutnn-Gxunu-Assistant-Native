@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import SwiftUI
 
 // MARK: - 应用内日志（诊断用）
@@ -32,6 +33,93 @@ final class AppLogger: @unchecked Sendable {
     }
 }
 
+// MARK: - 账号持久化（修“每次退出都要重新登录”）
+//
+// 学校 + 学号放 UserDefaults，密码放系统钥匙串（Keychain）。
+// 按学校分开存：切学校时保存当前输入，回来接着用（和 Flutter accountsBySchool 一个意思）。
+// 桂工登录每次都要验证码，启动时只能预填账号 + 自动取验证码图，不能全自动登录；
+// 职师院默认不要验证码，启动时可直接自动登录（服务器要求验证码时再落回登录页）。
+enum CredentialsStore {
+    private static let service = "com.h2sy60.GlutnnGxunuAssistant"
+    private static let schoolKey = "savedSchoolId"
+
+    private static func studentIdKey(_ schoolId: SchoolID) -> String {
+        "savedStudentId.\(schoolId.rawValue)"
+    }
+    private static func accountKey(_ schoolId: SchoolID) -> String {
+        "savedAccount.\(schoolId.rawValue)"
+    }
+
+    /// 保存一所学校的账号（登录成功时调）。
+    static func save(schoolId: SchoolID, studentId: String, password: String) {
+        UserDefaults.standard.set(schoolId.rawValue, forKey: schoolKey)
+        UserDefaults.standard.set(studentId, forKey: studentIdKey(schoolId))
+        savePassword(password, account: accountKey(schoolId))
+    }
+
+    /// 读某所学校已存的账号（切学校恢复输入用）。
+    static func load(schoolId: SchoolID) -> (studentId: String, password: String)? {
+        guard let studentId = UserDefaults.standard.string(forKey: studentIdKey(schoolId)),
+              !studentId.isEmpty,
+              let password = loadPassword(account: accountKey(schoolId)),
+              !password.isEmpty else { return nil }
+        return (studentId, password)
+    }
+
+    /// 上次登录的学校（启动恢复用）。
+    static func lastSchoolId() -> SchoolID? {
+        guard let raw = UserDefaults.standard.string(forKey: schoolKey) else { return nil }
+        return SchoolID(rawValue: raw)
+    }
+
+    /// 清掉全部已存账号（退出登录时调）。
+    static func clearAll() {
+        for id in SchoolID.allCases {
+            UserDefaults.standard.removeObject(forKey: studentIdKey(id))
+            deletePassword(account: accountKey(id))
+        }
+        UserDefaults.standard.removeObject(forKey: schoolKey)
+    }
+
+    // MARK: - Keychain（密码）
+
+    private static func savePassword(_ password: String, account: String) {
+        guard let data = password.data(using: .utf8) else { return }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecValueData as String: data,
+        ]
+        SecItemDelete(query as CFDictionary)
+        SecItemAdd(query as CFDictionary, nil)
+    }
+
+    private static func loadPassword(account: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+        var result: AnyObject?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let data = result as? Data,
+              let value = String(data: data, encoding: .utf8) else { return nil }
+        return value
+    }
+
+    private static func deletePassword(account: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        SecItemDelete(query as CFDictionary)
+    }
+}
+
 // MARK: - 登录 / 课表结果
 
 enum LoginOutcome {
@@ -60,8 +148,9 @@ enum ScheduleError: Error, LocalizedError {
 
 // MARK: - App 状态（唯一数据源）
 //
-// 学号/密码只存在内存里（供会话过期自动重登），不写磁盘、不发给
-// 教务以外的任何地方。设置页/持久化以后再做。
+// 账号按学校存在 UserDefaults（学号）+ Keychain（密码），登录成功即保存；
+// 启动时恢复上次学校并预填账号，职师院可直接自动登录（桂工每次都要验证码，只能预填 + 自动取图）。
+// 密码只发给教务服务器，绝不记日志。
 
 @MainActor
 @Observable
@@ -69,9 +158,11 @@ final class AppState {
     /// 当前学校，默认桂工。
     var school: SchoolConfig = gutSchool
     var isLoggedIn = false
+    /// 启动时正在恢复已存会话（自动登录中），ContentView 用它显示等待而不是闪登录页。
+    var isRestoringSession = false
     var studentId = ""
     var studentName = ""
-    /// 密码只存内存，供自动重登用。
+    /// 密码只存 Keychain，供自动重登用。
     var password = ""
 
     /// 当前学期：年（如 2026）+ 学期（"秋"/"春"）。
@@ -100,6 +191,15 @@ final class AppState {
 
     init() {
         updateTermFromDate()
+        // 恢复上次登录的学校 + 该校已存账号（预填，启动后自动登录见 tryAutoLogin）。
+        if let lastId = CredentialsStore.lastSchoolId() {
+            school = schoolById(lastId)
+            updateTermFromDate()
+        }
+        if let saved = CredentialsStore.load(schoolId: school.id) {
+            studentId = saved.studentId
+            password = saved.password
+        }
     }
 
     /// 按当前日期算学年学期（8 月及以后为秋季学期）。
@@ -116,13 +216,24 @@ final class AppState {
         currentWeek = GlutnnGxunuAssistant.currentWeek(for: school, on: date)
     }
 
-    /// 切学校：换配置、清登录态和验证码（Cookie 按 host 分桶，不用清）。
+    /// 切学校：换配置、清登录态和验证码。已输的学号密码按学校保存，回来接着用（Flutter _switchSchool 同款）。
+    /// Cookie 按 host 分桶，不用清。
     func switchSchool(_ newSchool: SchoolConfig) {
         guard newSchool.id != school.id else { return }
+        // 先把当前学校的输入存下来（哪怕还没登录成功，下次回来也能接着输）。
+        if !studentId.isEmpty {
+            CredentialsStore.save(schoolId: school.id, studentId: studentId, password: password)
+        }
         school = newSchool
         isLoggedIn = false
-        studentId = ""
-        password = ""
+        // 恢复目标学校已存的账号；没有就清空输入框。
+        if let saved = CredentialsStore.load(schoolId: newSchool.id) {
+            studentId = saved.studentId
+            password = saved.password
+        } else {
+            studentId = ""
+            password = ""
+        }
         studentName = ""
         courses = []
         scores = []
@@ -152,9 +263,21 @@ final class AppState {
 
     /// 登录。成功后自动拉课表。
     func login() async {
-        guard !studentId.isEmpty, !password.isEmpty else {
-            loginError = "请填写学号和密码"
+        // 校验（Flutter login.dart 同款分情况提示）。
+        guard !studentId.isEmpty else {
+            loginError = "请输入学号"
             return
+        }
+        guard !password.isEmpty else {
+            loginError = "请输入密码"
+            return
+        }
+        if school.id == .gut {
+            let isTenDigits = studentId.count == 10 && studentId.allSatisfy { $0.isNumber }
+            guard isTenDigits else {
+                loginError = "桂工学号为 10 位数字"
+                return
+            }
         }
         loginLoading = true
         loginError = nil
@@ -171,6 +294,8 @@ final class AppState {
         switch outcome {
         case .success:
             AppLogger.shared.log("login \(school.id) success")
+            // 登录成功即保存账号，下次启动免输。
+            CredentialsStore.save(schoolId: school.id, studentId: studentId, password: password)
             isLoggedIn = true
             loginError = nil
             showCaptcha = false
@@ -205,6 +330,25 @@ final class AppState {
         captchaText = ""
         showCaptcha = false
         NetworkClient.shared.cookies.clearAll()
+        // 退出登录清掉全部已存账号（下次启动不再自动登录）。
+        CredentialsStore.clearAll()
+    }
+
+    /// 启动恢复：有已存账号就自动登录一次。
+    /// 桂工每次都要验证码，自动登录走不通（login 里 captcha 为空会失败），
+    /// 此时只预填账号 + 自动取一张验证码图，等用户输验证码点登录；
+    /// 职师院默认不要验证码，能直接登进去。失败不报错，落回登录页。
+    func tryAutoLogin() async {
+        guard !isLoggedIn, !studentId.isEmpty, !password.isEmpty else { return }
+        isRestoringSession = true
+        defer { isRestoringSession = false }
+        await login()
+        // 桂工自动登录失败只是因为缺验证码：预填还在，取一张图等用户输。
+        if !isLoggedIn, school.id == .gut {
+            loginError = nil
+            if captchaImageData == nil { await fetchCaptcha() }
+        }
+        // 职师院自动登录若因服务器要求验证码而失败，login() 已把 loginError 置为“请输入验证码”并取了图。
     }
 
     // MARK: - 课表

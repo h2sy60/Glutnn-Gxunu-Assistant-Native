@@ -1,72 +1,127 @@
 import SwiftUI
 
-/// 我的：显示当前学校、学号、姓名，提供退出登录。
+/// 我的（Flutter 版形态）：壁纸 + 玻璃卡片。
 struct MineView: View {
     @Environment(AppState.self) private var appState
+
+    /// 玻璃卡片容器。
+    private func glassCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        content()
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 26))
+    }
 
     var body: some View {
         NavigationStack {
             ZStack {
-                Color(.systemGroupedBackground)
+                WallpaperBackground()
                     .ignoresSafeArea()
 
-                List {
-                    Section {
-                        HStack {
-                            Image(systemName: "person.circle.fill")
-                                .font(.largeTitle)
-                                .foregroundStyle(.secondary)
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(appState.studentName.isEmpty ? "你好" : appState.studentName)
-                                    .font(.headline)
-                                Text("\(appState.school.displayName) · \(appState.studentId)")
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        // 顶栏：Hi! 名字（Flutter mine.dart 同款）
+                        Text(appState.studentName.isEmpty ? "Hi!" : "Hi! \(appState.studentName)")
+                            .font(.system(size: 34, weight: .bold))
+                            .foregroundStyle(.white)
+                            .shadow(color: .black.opacity(0.4), radius: 8, x: 0, y: 2)
+                            .padding(.top, 60)
+                            .padding(.horizontal, 20)
+
+                        VStack(spacing: 12) {
+                            // 个人信息卡片
+                            glassCard {
+                                HStack {
+                                    Image(systemName: "person.circle.fill")
+                                        .font(.largeTitle)
+                                        .foregroundStyle(.white.opacity(0.9))
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(appState.studentName.isEmpty ? "你好" : appState.studentName)
+                                            .font(.headline)
+                                            .foregroundStyle(.white)
+                                        Text("\(appState.school.displayName) · \(appState.studentId)")
+                                            .font(.subheadline)
+                                            .foregroundStyle(.white.opacity(0.7))
+                                    }
+                                    Spacer()
+                                    Button("更换账号") {
+                                        appState.logout()
+                                    }
                                     .font(.subheadline)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 8)
+                                    .glassEffect(.regular, in: Capsule())
+                                }
                             }
-                        }
-                        .padding(.vertical, 4)
-                    }
 
-                    Section {
-                        HStack {
-                            Text("当前周")
-                            Spacer()
-                            Text("第 \(appState.currentWeek) 周")
-                                .foregroundStyle(.secondary)
-                        }
-                        HStack {
-                            Text("学期")
-                            Spacer()
-                            Text("\(appState.year)-\(appState.year + 1) 学年 \(appState.semester)季学期")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
+                            // 学期信息卡片
+                            glassCard {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack {
+                                        Text("当前周")
+                                            .foregroundStyle(.white)
+                                        Spacer()
+                                        Text("第 \(appState.currentWeek) 周")
+                                            .foregroundStyle(.white.opacity(0.7))
+                                    }
+                                    HStack {
+                                        Text("学期")
+                                            .foregroundStyle(.white)
+                                        Spacer()
+                                        Text("\(appState.year)-\(appState.year + 1) 学年 \(appState.semester)季学期")
+                                            .foregroundStyle(.white.opacity(0.7))
+                                    }
+                                }
+                            }
 
-                    Section {
-                        ShareLink("导出日志", item: AppLogger.shared.exportText())
-                    } footer: {
-                        Text("遇到问题时导出日志，方便定位。")
-                    }
+                            // 成绩查询
+                            NavigationLink(destination: ScoreView()) {
+                                HStack {
+                                    Image(systemName: "chart.bar.fill")
+                                        .foregroundStyle(.white)
+                                    Text("成绩查询")
+                                        .foregroundStyle(.white)
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .foregroundStyle(.white.opacity(0.7))
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 14)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 26))
+                            }
 
-                    Section {
-                        NavigationLink(destination: ScoreView()) {
-                            Text("成绩查询")
-                        }
-                    }
+                            // 导出日志
+                            glassCard {
+                                HStack {
+                                    ShareLink("导出日志", item: AppLogger.shared.exportText())
+                                        .foregroundStyle(.white)
+                                    Spacer()
+                                    Text("遇到问题时导出日志，方便定位。")
+                                        .font(.caption)
+                                        .foregroundStyle(.white.opacity(0.6))
+                                }
+                            }
 
-                    Section {
-                        Button(role: .destructive) {
-                            appState.logout()
-                        } label: {
-                            Text("退出登录")
-                                .frame(maxWidth: .infinity, alignment: .center)
+                            // 退出登录
+                            Button(role: .destructive) {
+                                appState.logout()
+                            } label: {
+                                Text("退出登录")
+                                    .foregroundStyle(.white)
+                                    .frame(maxWidth: .infinity, alignment: .center)
+                                    .padding(.vertical, 14)
+                            }
+                            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 26))
                         }
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 140)
                     }
                 }
-                .listStyle(.insetGrouped)
             }
-            .navigationTitle("我的")
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationBarHidden(true)
         }
     }
 }
@@ -88,13 +143,10 @@ struct ScoreView: View {
     @Environment(AppState.self) private var appState
 
     /// 成绩数组存在 @State 里（普通值），.task 与 .onChange 再从 appState 同步。
+    /// 注意：List 用 $scores（Binding）——本页的 List/ForEach 若传普通数组，
+    /// Swift 6 会把它解析成 Binding 重载而报错（build 13–19 六次全挂）；
+    /// 直接传 Binding 反而对上编译器要的重载，行内用 .wrappedValue 取值。
     @State private var scores: [CourseScore] = []
-
-    /// 临时：把成绩拼成纯文本展示。List/ForEach 在此页总被解析成 Binding
-    ///（build 13–19 六次全挂），先拿掉列表，列表界面稍后单独修。
-    private var scoresText: String {
-        scores.map { "\($0.courseName)  \($0.rawScore)  \($0.teacher.isEmpty ? "—" : $0.teacher)" }.joined(separator: "\n")
-    }
 
     var body: some View {
         ZStack {
@@ -154,12 +206,30 @@ struct ScoreView: View {
                     .padding(.horizontal)
                     .padding(.top, 8)
 
-                    // 临时：成绩以纯文本展示（List/ForEach 在此页总被解析成 Binding，先拿掉）。
-                    ScrollView {
-                        Text(scoresText)
-                            .font(.system(size: 15))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding()
+                    // 成绩列表（真实列表行，不及格标红，下拉刷新）。
+                    List($scores, id: \.id) { $score in
+                        let s = $score.wrappedValue
+                        HStack(alignment: .top, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(s.courseName)
+                                    .font(.headline)
+                                Text("\(s.teacher.isEmpty ? "—" : s.teacher) · \(s.courseCategory.isEmpty ? "—" : s.courseCategory)")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                Text("学分 \(s.credit, specifier: "%.1f") · 绩点 \(s.gradePoint, specifier: "%.2f")")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text(s.rawScore)
+                                .font(.headline)
+                                .foregroundStyle(s.score < 60 && s.score > 0 ? .red : .primary)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .listStyle(.insetGrouped)
+                    .refreshable {
+                        await appState.refreshScores()
                     }
                 }
             }
