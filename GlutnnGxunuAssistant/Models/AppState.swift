@@ -939,7 +939,7 @@ final class AppState {
     // MARK: - 成绩
 
     /// 拉成绩（全部学年学期）。会话过期时自动重登一次再试。
-    func refreshScores() async {
+    func refreshScores(year filterYear: Int? = nil, term filterTerm: String? = nil) async {
         guard isLoggedIn else { return }
         // 防重入（build 43）：正在刷新时再点直接忽略。
         guard !isRefreshingScores else { return }
@@ -954,9 +954,9 @@ final class AppState {
         do {
             let list: [CourseScore]
             if school.id == .gut {
-                list = try await GUTService.fetchScores()
+                list = try await GUTService.fetchScores(year: filterYear, term: filterTerm)
             } else {
-                list = try await GXVNUService.fetchScores(year: year)
+                list = try await GXVNUService.fetchScores(year: filterYear, term: filterTerm)
             }
             scores = list
             AppLogger.shared.log("scores \(school.id) ok, \(list.count) items")
@@ -973,7 +973,7 @@ final class AppState {
                     let reloginOutcome = await reloginGXVNU()
                     if reloginOutcome == .success {
                         do {
-                            let list = try await GXVNUService.fetchScores(year: year)
+                            let list = try await GXVNUService.fetchScores(year: filterYear, term: filterTerm)
                             scores = list
                             if list.isEmpty { scoresError = "暂无成绩" }
                         } catch {
