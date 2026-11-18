@@ -44,13 +44,17 @@ struct HomeView: View {
         let m = cal.component(.month, from: now)
         let d = cal.component(.day, from: now)
         let wd = cal.component(.weekday, from: now)
-        let names = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
+        let names = ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"]
         return "\(m)月\(d)日 · \(names[wd - 1])"
     }
 
+    /// 学期行（Flutter 同款）：第 X 周 · 已完成 N%；周 > 20 显示“学期已经结束咯”。
     private var semesterLine: String {
+        let week = appState.currentWeek
+        if week > 20 { return "学期已经结束咯" }
         let term = appState.semester == "秋" ? "第一学期" : "第二学期"
-        return "\(appState.year)-\(appState.year + 1) 学年\(term) · 第 \(appState.currentWeek) 周"
+        let pct = min(100, week * 100 / 20)
+        return "\(appState.year)-\(appState.year + 1) 学年\(term) · 第 \(week) 周 · 已完成 \(pct)%"
     }
 
     private func startTime(of course: Course) -> (Int, Int) {
@@ -81,6 +85,16 @@ struct HomeView: View {
             if nowMin < e.0 * 60 + e.1 { return c }
         }
         return nil
+    }
+
+    /// 这节课现在是否正在上（当前时间在开始–结束之间）。
+    private func isNow(_ course: Course) -> Bool {
+        let cal = Calendar(identifier: .gregorian)
+        let now = Date()
+        let nowMin = cal.component(.hour, from: now) * 60 + cal.component(.minute, from: now)
+        let s = startTime(of: course)
+        let e = endTime(of: course)
+        return nowMin >= s.0 * 60 + s.1 && nowMin < e.0 * 60 + e.1
     }
 
     private func relativeText(_ course: Course) -> String {
@@ -140,9 +154,9 @@ struct HomeView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    // 问候 + 更多按钮
+                    // 问候（Flutter 问候语不带人名）
                     HStack(alignment: .center) {
-                        Text(appState.studentName.isEmpty ? greeting : "\(greeting)，\(appState.studentName)")
+                        Text(greeting)
                             .font(.system(size: 44, weight: .heavy))
                             .foregroundStyle(.white)
                             .shadow(color: .black.opacity(0.4), radius: 8, x: 0, y: 2)
@@ -172,13 +186,13 @@ struct HomeView: View {
                     .padding(.top, 4)
                     .padding(.horizontal, 20)
 
-                    // 下节课胶囊
+                    // 下节课胶囊（正在上 / 下节，Flutter GlassNextClassPill 同款）
                     if let next = nextCourse {
                         Button { selectedTab = 1 } label: {
                             HStack(spacing: 8) {
                                 Image(systemName: "clock")
                                     .foregroundStyle(.white)
-                                Text("下节 · \(next.name) · \(next.location) · \(timeRange(next)) · \(relativeText(next))")
+                                Text("\(isNow(next) ? "正在上" : "下节") · \(next.name) · \(next.location) · \(timeRange(next)) · \(relativeText(next))")
                                     .font(.system(size: 15, weight: .semibold))
                                     .foregroundStyle(.white)
                                     .lineLimit(1)
@@ -271,6 +285,9 @@ struct HomeView: View {
                     // 底部留白：内容别滑到悬浮玻璃导航栏下面去。
                     Spacer().frame(height: 140)
                 }
+            }
+            .refreshable {
+                await appState.refreshSchedule()
             }
             .toolbar(.hidden, for: .navigationBar)
             .alert("考试功能即将上线", isPresented: $showExamsAlert) {
