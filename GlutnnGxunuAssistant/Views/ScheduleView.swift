@@ -822,7 +822,7 @@ struct ScheduleExportView: View {
                             .font(.system(size: 14))
                             .foregroundStyle(Color.black.opacity(0.6))
                         // 权限说明。
-                        Text("如果导出时提示日历不能写入，请去系统设置，找到「桂工课程助手」并点击，更改日历权限为「完全读写」后再尝试导出")
+                        Text("如果导出时提示日历不能写入，请去系统设置，找到「周周有善」并点击，更改日历权限为「完全读写」后再尝试导出")
                             .font(.system(size: 14))
                             .foregroundStyle(Color.black.opacity(0.6))
                         // 日历名称卡。
@@ -975,7 +975,7 @@ struct ScheduleExportView: View {
             showResult = true
         case .permission:
             resultTitle = "日历不能写入"
-            resultMessage = "请去系统设置，找到「桂工课程助手」并点击，更改日历权限为「完全读写」后再尝试导出。"
+            resultMessage = "请去系统设置，找到「周周有善」并点击，更改日历权限为「完全读写」后再尝试导出。"
             showResult = true
         case .failure(let message):
             flashToast(message)
