@@ -5,7 +5,6 @@ import SwiftUI
 struct HomeView: View {
     @Environment(AppState.self) private var appState
     @Binding var selectedTab: Int
-    @Environment(\.scenePhase) private var scenePhase
     @State private var showExamsAlert = false
     @State private var showScores = false
     /// 刷新防刷计数（原版 home.dart refresh() 同款）：点 7 下“你太快了!”，
@@ -312,13 +311,9 @@ struct HomeView: View {
         refreshClickCount = 0
     }
 
-    /// 回到前台时刷新一次（原版 layout.dart：AppLifecycleState.resumed 时
-    /// reinitialize(refreshState: true)）。和手动刷新一样显示提示条，不静默。
-    private func refreshOnForeground() {
-        guard appState.isLoggedIn else { return }
-        Task { await performStagedRefresh() }
-    }
-
+    /// 回到前台不自动刷新（Russell 2026-11-18 13:05：只有点首页“刷新”按钮才更新课表，
+    /// 不然老是请求）。旧版 layout.dart 的 resumed 自动刷新已删；刷新只走
+    /// 首页“刷新”胶囊和下拉刷新，都是手动。
     var body: some View {
         NavigationStack {
             ZStack {
@@ -488,9 +483,6 @@ struct HomeView: View {
             }
             .refreshable {
                 await refreshWithFeedback()
-            }
-            .onChange(of: scenePhase) { _, newPhase in
-                if newPhase == .active { refreshOnForeground() }
             }
             .toolbar(.hidden, for: .navigationBar)
             .alert("考试功能即将上线", isPresented: $showExamsAlert) {
