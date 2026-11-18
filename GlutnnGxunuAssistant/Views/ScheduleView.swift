@@ -7,7 +7,8 @@ import EventKit // 导出到日历（EventKit）：建日历、写课程事件�
 //      “2026-11-18📍”玻璃药丸；点标题或日期都回到当前周。没有左右箭头，没有日期范围。
 // 周 strip：只有星期字（一 二 三 四 五 六 日），当天是黑色圆角 pill；
 //      showDayByWeekDay 默认 false，所以不显示日期数字。
-// 网格：白底 + 虚线网格 + 淡彩色块；左栏是节号 + 开始 + 结束时间；
+// 网格：白底 + 虚线网格 + 饱和彩色块 + 白字（build 46：图二旧版风，
+//      Russell 嫌淡色块黑字丑）；左栏是节号 + 开始 + 结束时间；
 //      块内是开始时间 + 全名（换行）+ 占两节以上再显示老师 + @教室（最多 3 行）。
 //      行高按屏幕高度算：（屏幕高 − 180 − 85）/ 除数，夹在 50–92；
 //      桂工除数 8.2（首屏 9 节）、职师院 9.2（首屏 10 节）。
@@ -66,6 +67,8 @@ struct ScheduleView: View {
     @Environment(AppState.self) private var appState
     @State private var displayWeek: Int = 0
     @State private var showExportPage = false
+    /// 点中的课程块（start/end 是合并后的节次范围），非空时弹课程详情。
+    @State private var selectedBlock: (start: Int, end: Int, course: Course)?
 
     private var week: Int {
         let raw = displayWeek == 0 ? appState.currentWeek : displayWeek
@@ -215,7 +218,10 @@ struct ScheduleView: View {
                                         ScheduleGrid(
                                             courses: list,
                                             school: appState.school,
-                                            rowHeight: rowHeightValue
+                                            rowHeight: rowHeightValue,
+                                            onSelect: { start, end, course in
+                                                selectedBlock = (start, end, course)
+                                            }
                                         )
                                         .padding(.bottom, bottomClearance)
                                     }
@@ -244,6 +250,18 @@ struct ScheduleView: View {
         }
         .fullScreenCover(isPresented: $showExportPage) {
             ScheduleExportView()
+        }
+        // 课程详情弹窗（点课程块弹出；点灰幕或 X 关闭）。
+        .overlay {
+            if let block = selectedBlock {
+                CourseDetailPopup(
+                    course: block.course,
+                    startSection: block.start,
+                    endSection: block.end,
+                    school: appState.school,
+                    onDismiss: { selectedBlock = nil }
+                )
+            }
         }
     }
 }
@@ -287,10 +305,34 @@ struct WeekDateStrip: View {
 /// 周网格：11 节 × 7 天，白底 + 虚线网格 + 淡彩色块。
 /// 块内布局和 Flutter _Grid 一样：顶部是开始时间，中间是全名（换行），占两节以上再显示老师，底部 @教室（最多 3 行）。
 /// 列宽用屏幕宽直接算，不用 GeometryReader 量。
+/// 课程块配色（图二旧版风：饱和色 + 白字）。
+/// build 46：Russell 2026-11-18 17:26 说淡色块黑字丑，喜欢图二的白字——
+/// 换成饱和色（红/蓝/青/橙/紫/绿/深蓝/粉），白字才压得住。
+/// 名字哈希取色，同一门课颜色稳定。
+private let coursePalette: [Color] = [
+    Color(red: 0.96, green: 0.35, blue: 0.42),
+    Color(red: 0.22, green: 0.55, blue: 0.96),
+    Color(red: 0.08, green: 0.72, blue: 0.62),
+    Color(red: 0.98, green: 0.60, blue: 0.12),
+    Color(red: 0.60, green: 0.40, blue: 0.94),
+    Color(red: 0.22, green: 0.72, blue: 0.38),
+    Color(red: 0.25, green: 0.42, blue: 0.85),
+    Color(red: 0.93, green: 0.40, blue: 0.60),
+]
+
+/// 课程名稳定取色（和 Flutter courseColor 同一思路：名字哈希）。
+private func courseColor(for name: String) -> Color {
+    var hash = 0
+    for scalar in name.unicodeScalars { hash = (hash &* 31) &+ Int(scalar.value) }
+    return coursePalette[abs(hash) % coursePalette.count]
+}
+
 struct ScheduleGrid: View {
     let courses: [Course]
     let school: SchoolConfig
     let rowHeight: CGFloat
+    /// 点课程块回调（start/end 是合并后的节次范围）。
+    var onSelect: ((Int, Int, Course) -> Void)? = nil
 
     /// 左侧栏宽（Flutter _railWidth = 46）。
     private let gutter: CGFloat = 46
@@ -303,24 +345,6 @@ struct ScheduleGrid: View {
     /// 网格总宽 = 屏幕宽 − 两侧边距 16。
     private var gridWidth: CGFloat {
         UIScreen.main.bounds.width - 16
-    }
-
-    private let pastel: [Color] = [
-        Color(red: 0.98, green: 0.85, blue: 0.88),
-        Color(red: 0.85, green: 0.90, blue: 0.99),
-        Color(red: 0.88, green: 0.85, blue: 0.98),
-        Color(red: 0.99, green: 0.90, blue: 0.80),
-        Color(red: 0.82, green: 0.95, blue: 0.90),
-        Color(red: 0.99, green: 0.95, blue: 0.78),
-        Color(red: 0.86, green: 0.93, blue: 0.86),
-        Color(red: 0.95, green: 0.88, blue: 0.95),
-    ]
-
-    /// 课程名稳定取色（和 Flutter courseColor 同一思路：名字哈希）。
-    private func color(for name: String) -> Color {
-        var hash = 0
-        for scalar in name.unicodeScalars { hash = (hash &* 31) &+ Int(scalar.value) }
-        return pastel[abs(hash) % pastel.count]
     }
 
     private func timeText(_ t: (Int, Int)) -> String {
@@ -394,32 +418,154 @@ struct ScheduleGrid: View {
                     VStack(spacing: 2) {
                         Text(timeText(school.startTimeList[block.start - 1]))
                             .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.black.opacity(0.85))
+                            .foregroundStyle(.white.opacity(0.9))
                         Text(block.course.name)
                             .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(.black.opacity(0.85))
+                            .foregroundStyle(.white)
                             .lineLimit(tall ? 4 : 2)
                             .multilineTextAlignment(.center)
                         if tall {
                             Text(block.course.teacher)
                                 .font(.system(size: 11))
-                                .foregroundStyle(.black.opacity(0.6))
+                                .foregroundStyle(.white.opacity(0.85))
                                 .lineLimit(1)
                         }
                         Text("@\(block.course.location)")
                             .font(.system(size: 11))
-                            .foregroundStyle(.black.opacity(0.6))
+                            .foregroundStyle(.white.opacity(0.85))
                             .lineLimit(3)
                             .multilineTextAlignment(.center)
                     }
                     .frame(width: w, height: h)
-                    .background(color(for: block.course.name), in: RoundedRectangle(cornerRadius: 10))
+                    .background(courseColor(for: block.course.name), in: RoundedRectangle(cornerRadius: 10))
+                    .contentShape(RoundedRectangle(cornerRadius: 10))
+                    .onTapGesture { onSelect?(block.start, block.end, block.course) }
                     .offset(x: x, y: y)
                 }
             }
         }
         .frame(width: gridWidth, height: totalHeight)
         .padding(.horizontal, 8)
+    }
+}
+
+// MARK: - 课程详情弹窗（液态玻璃重设计，build 46）
+//
+// 图三旧版是扁平白卡（“课程信息”蓝标题 + “Course information” 灰副标题 +
+// 灰字 label 行），不照抄。新版按 iOS 26 液态玻璃规范重做：
+// 居中浮动玻璃卡（.glassEffect(.regular)），毛玻璃折射出身后课表；
+// 课程名就是标题（大字粗体，配课程色圆点），不用“课程信息”当标题；
+// 每行配 SF Symbol 图标（人/定位/日历/时钟），label 灰字、值深字粗体；
+// 点卡外灰幕或右上玻璃 X 关闭。
+struct CourseDetailPopup: View {
+    let course: Course
+    let startSection: Int
+    let endSection: Int
+    let school: SchoolConfig
+    let onDismiss: () -> Void
+
+    /// 星期字（一..日）。
+    private var weekdayText: String {
+        let chars = ["一", "二", "三", "四", "五", "六", "日"]
+        guard (1...7).contains(course.weekday) else { return "—" }
+        return chars[course.weekday - 1]
+    }
+
+    /// 周数压缩成区间：[1...12] → "1-12周"；[1,3,5] → "1、3、5周"。
+    private var weeksText: String {
+        let sorted = course.weeks.sorted()
+        guard !sorted.isEmpty else { return "—" }
+        var parts: [String] = []
+        var start = sorted[0]
+        var prev = sorted[0]
+        for w in sorted.dropFirst() {
+            if w == prev + 1 {
+                prev = w
+            } else {
+                parts.append(start == prev ? "\(start)" : "\(start)-\(prev)")
+                start = w
+                prev = w
+            }
+        }
+        parts.append(start == prev ? "\(start)" : "\(start)-\(prev)")
+        return parts.joined(separator: "、") + "周"
+    }
+
+    /// 上课时钟范围（第 start 节开始时间 – 第 end 节结束时间）。
+    private var timeRange: String {
+        guard startSection >= 1, endSection >= startSection,
+              startSection <= school.startTimeList.count,
+              endSection <= school.endTimeList.count else { return "—" }
+        let s = school.startTimeList[startSection - 1]
+        let e = school.endTimeList[endSection - 1]
+        return String(format: "%02d:%02d - %02d:%02d", s.0, s.1, e.0, e.1)
+    }
+
+    var body: some View {
+        ZStack {
+            // 灰幕：点外面关闭。
+            Color.black.opacity(0.35)
+                .ignoresSafeArea()
+                .onTapGesture { onDismiss() }
+            VStack(alignment: .leading, spacing: 0) {
+                // 标题行：课程色圆点 + 课名 + 玻璃 X。
+                HStack(spacing: 10) {
+                    Circle()
+                        .fill(courseColor(for: course.name))
+                        .frame(width: 12, height: 12)
+                    Text(course.name)
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundStyle(.black)
+                        .lineLimit(2)
+                    Spacer()
+                    Button { onDismiss() } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(.black.opacity(0.7))
+                            .frame(width: 28, height: 28)
+                    }
+                    .glassEffect(.clear, in: Circle())
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 18)
+                Divider()
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 12)
+                VStack(spacing: 12) {
+                    detailRow(icon: "person.fill", label: "教师", value: course.teacher)
+                    detailRow(icon: "mappin", label: "地点", value: course.location)
+                    detailRow(icon: "calendar", label: "周数", value: weeksText)
+                    detailRow(icon: "clock.fill", label: "时间", value: "星期\(weekdayText) · 第\(startSection)-\(endSection)节")
+                    detailRow(icon: "timer", label: "上课", value: timeRange)
+                    if !course.extra.isEmpty {
+                        detailRow(icon: "note.text", label: "备注", value: course.extra)
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 20)
+            }
+            .frame(width: 320)
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 28))
+        }
+    }
+
+    /// 信息行：图标 + 灰字 label + 深字粗体值。
+    private func detailRow(icon: String, label: String, value: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 15))
+                .foregroundStyle(.black.opacity(0.5))
+                .frame(width: 20)
+            Text(label)
+                .font(.system(size: 15))
+                .foregroundStyle(.black.opacity(0.5))
+                .frame(width: 40, alignment: .leading)
+            Text(value)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.black)
+                .lineLimit(2)
+            Spacer()
+        }
     }
 }
 
