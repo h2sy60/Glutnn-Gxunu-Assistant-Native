@@ -1,48 +1,54 @@
 import SwiftUI
 
-// MARK: - 课表（Flutter 版白底 WakeUp 风）：白底 + 顶栏 + 周日期条 + 左右划切周 + 按学校算行高
+// MARK: - 课表（原版 WakeUp 风，照 Flutter schedule.dart + bars.dart 一字不差）
 //
-// 结构和 Flutter schedule.dart 一字不差：
-//   顶栏（第 X 周 + 日期范围 + 左右切周，固定）
-//   周日期条（星期 + 日期，当天黑色 pill，固定）
-//   剩余区域：纵向 ScrollView，里面是定高（行高×11）的横向 TabView（每页一周网格）+ 底部 85 留白。
-// 顶栏和日期条在 TabView 外面，不跟着划走；TabView 只装网格，不在每页里再套 ScrollView。
-// build 21 的错：TabView 每页里套 ScrollView，又没给 TabView 定高，
-// 布局一乱，日期条就被顶到屏幕中间去了。
+// 顶栏：左“第 X 周 周Y”（20pt 粗黑，只在当前周才带“周Y”），右“导出”玻璃药丸 +
+//      “2026-11-18📍”玻璃药丸；点标题或日期都回到当前周。没有左右箭头，没有日期范围。
+// 周 strip：只有星期字（一 二 三 四 五 六 日），当天是黑色圆角 pill；
+//      showDayByWeekDay 默认 false，所以不显示日期数字。
+// 网格区：顶栏 + strip 固定在上，TabView（左右划切周）占满剩余高度，
+//      每页里一个纵向 ScrollView 装 11 节网格（下滑看 10-11 节）。
+//      行高按网格区可用高度算：（可用高 − 85）/ 除数，夹在 50–92；
+//      桂工除数 8.2（首屏 9 节）、职师院 9.2（首屏 10 节）。
+// build 21/22 的错：顶栏用了居中“第 X 周 + 日期范围 + 箭头”，
+// strip 硬加了日期数字，而且 TabView 嵌套 ScrollView 的方式让日期条掉到屏幕中间。
 
 struct ScheduleView: View {
     @Environment(AppState.self) private var appState
     @State private var displayWeek: Int = 0
+    @State private var showExportSoon = false
 
     private var week: Int { displayWeek == 0 ? appState.currentWeek : displayWeek }
+    private var isCurrentWeek: Bool { week == appState.currentWeek }
 
     private var weekCourses: [Course] {
         appState.courses.filter { $0.weeks.contains(week) }
     }
 
-    /// 本周周一（termStartDate 就是第 1 周的周一）。
-    private func monday(of week: Int) -> Date {
-        let cal = Calendar(identifier: .gregorian)
-        return cal.date(byAdding: .day, value: (week - 1) * 7, to: appState.school.termStartDate) ?? Date()
+    /// 今天星期几的字（一..日）。
+    private var todayWeekdayChar: String {
+        let wd = Calendar(identifier: .gregorian).component(.weekday, from: Date())
+        // Calendar weekday: 1=周日..7=周六；转成 1=周一..7=周日
+        let idx = wd == 1 ? 7 : wd - 1
+        return ["一", "二", "三", "四", "五", "六", "日"][idx - 1]
     }
 
-    /// 本周起止日期（“11月16日 - 11月22日”）。
-    private var weekRangeText: String {
+    /// 今天日期（原版格式：2026-11-18，不补零）。
+    private var todayDateText: String {
         let cal = Calendar(identifier: .gregorian)
-        let mon = monday(of: week)
-        let sun = cal.date(byAdding: .day, value: 6, to: mon) ?? mon
-        let fmt: (Date) -> String = { d in
-            "\(cal.component(.month, from: d))月\(cal.component(.day, from: d))日"
-        }
-        return "\(fmt(mon)) - \(fmt(sun))"
+        let now = Date()
+        return "\(cal.component(.year, from: now))-\(cal.component(.month, from: now))-\(cal.component(.day, from: now))"
     }
 
-    /// 底部留白 = 浮动低栏高 + 底部边距（Flutter kBottomBarHeight + kBottomBarBottomMargin = 85）。
+    /// 回到当前周（原版点标题/日期都回到当前周）。
+    private func backToCurrentWeek() {
+        displayWeek = appState.currentWeek
+    }
+
+    /// 底部留白 = 浮动低栏高 + 底部边距（Flutter kBottomBarHeight + kBottomBarBottomMargin = 85 + 0）。
     private let bottomClearance: CGFloat = 85
 
-    /// 行高按学校算（Flutter schedule.dart 同款）：行高 =（剩余高度 − 85）/ 除数，夹在 50–92。
-    /// 桂工除数 8.2（首屏 9 节）、职师院 9.2（首屏 10 节）。
-    /// 注意：这里的剩余高度是顶栏 + 日期条之后剩下的，不是整屏高（build 21 错在拿整屏高算，行高顶到 92）。
+    /// 行高按学校算（Flutter schedule.dart 同款）：行高 =（网格区可用高 − 85）/ 除数，夹在 50–92。
     private func rowHeight(for availableHeight: CGFloat) -> CGFloat {
         let divisor: CGFloat = appState.school.id == .gut ? 8.2 : 9.2
         return min(92, max(50, (availableHeight - bottomClearance) / divisor))
@@ -50,46 +56,57 @@ struct ScheduleView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // 顶栏：第 X 周 + 日期范围 + 左右切周（固定，不划走）
+            // 顶栏（原版 ScheduleTopBar）：左“第 X 周 周Y”，右“导出”+“日期📍”玻璃药丸。
             HStack {
                 Button {
-                    if week > 1 { displayWeek = week - 1 }
+                    backToCurrentWeek()
                 } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.black)
-                        .padding(6)
-                }
-                .disabled(week <= 1)
-                Spacer()
-                VStack(spacing: 2) {
-                    Text("第 \(week) 周")
+                    Text("第\(week)周\(isCurrentWeek ? " 周\(todayWeekdayChar)" : "")")
                         .font(.system(size: 20, weight: .bold))
                         .foregroundStyle(.black)
-                    Text(weekRangeText)
-                        .font(.system(size: 13))
-                        .foregroundStyle(.black.opacity(0.6))
                 }
                 Spacer()
-                Button {
-                    if week < 20 { displayWeek = week + 1 }
-                } label: {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(.black)
-                        .padding(6)
+                HStack(spacing: 4) {
+                    // 导出到日历（原版跳 ScheduleExportPage；原生暂未实现，先提示）。
+                    Button {
+                        showExportSoon = true
+                    } label: {
+                        Text("导出")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(.black87)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                    }
+                    .glassEffect(.regular, in: Capsule())
+                    // 日期 + 定位钉，点按回到当前周。
+                    Button {
+                        backToCurrentWeek()
+                    } label: {
+                        HStack(spacing: 2) {
+                            Text(todayDateText)
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(.black87)
+                            Image(systemName: "mappin.circle.fill")
+                                .font(.system(size: 15))
+                                .foregroundStyle(.black87)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                    }
+                    .glassEffect(.regular, in: Capsule())
                 }
-                .disabled(week >= 20)
             }
-            .padding(.horizontal, 20)
+            .padding(.horizontal, 16)
             .padding(.top, 8)
             .padding(.bottom, 6)
 
-            // 周日期条：星期 + 日期，当天是黑色圆角 pill（固定，不划走）
-            WeekDateStrip(week: week, monday: monday(of: week))
+            // 周 strip（原版 _Header）：只有星期字，当天黑色 pill；不显示日期数字。
+            WeekDateStrip(week: week, isCurrentWeek: isCurrentWeek)
                 .padding(.horizontal, 8)
-                .padding(.bottom, 6)
+                .padding(.top, 4)
+                .padding(.bottom, 10)
 
+            // 网格区：TabView 占满剩余高度，左右划切周；每页里纵向滑看 10-11 节。
             if appState.scheduleLoading && appState.courses.isEmpty {
                 Spacer()
                 ProgressView("正在拉取课表…")
@@ -112,75 +129,71 @@ struct ScheduleView: View {
                 .padding()
                 Spacer()
             } else {
-                // 网格区：纵向能滑，横向划动切周。TabView 只装网格，定高，不在每页里套 ScrollView。
-                GeometryReader { geo in
-                    let rh = rowHeight(for: geo.size.height)
-                    ScrollView(.vertical, showsIndicators: false) {
-                        VStack(spacing: 0) {
-                            TabView(selection: $displayWeek) {
-                                ForEach(1...20, id: \.self) { w in
-                                    ScheduleGrid(
-                                        courses: appState.courses.filter { $0.weeks.contains(w) },
-                                        school: appState.school,
-                                        rowHeight: rh
-                                    )
-                                    .tag(w)
+                TabView(selection: $displayWeek) {
+                    ForEach(1...20, id: \.self) { w in
+                        GeometryReader { geo in
+                            let rh = rowHeight(for: geo.size.height)
+                            ScrollView(.vertical, showsIndicators: false) {
+                                ScheduleGrid(
+                                    courses: appState.courses.filter { $0.weeks.contains(w) },
+                                    school: appState.school,
+                                    rowHeight: rh
+                                )
+                                .padding(.bottom, bottomClearance)
+                            }
+                            .refreshable {
+                                if !appState.isLoggedIn {
+                                    appState.showLoginSheet = true
+                                } else {
+                                    await appState.refreshSchedule()
                                 }
                             }
-                            .tabViewStyle(.page(indexDisplayMode: .never))
-                            .frame(height: rh * CGFloat(appState.school.sectionCount))
-                            // 底部留白：滑到底最后一节也能完整露出来，不被低栏盖住。
-                            Color.clear.frame(height: bottomClearance)
                         }
-                    }
-                    .refreshable {
-                        if !appState.isLoggedIn {
-                            appState.showLoginSheet = true
-                        } else {
-                            await appState.refreshSchedule()
-                        }
+                        .tag(w)
                     }
                 }
+                .tabViewStyle(.page(indexDisplayMode: .never))
             }
         }
         .background(Color.white)
         .onAppear { displayWeek = appState.currentWeek }
+        .alert("导出功能即将上线", isPresented: $showExportSoon) {
+            Button("知道了", role: .cancel) {}
+        }
     }
 }
 
-/// 周日期条：周一到周日，星期 + 日期；当天黑色 pill 白字。
-/// 左侧留出和网格左侧栏一样的宽度（46），日期列才和网格的 7 天列对齐。
+/// 周 strip（原版 _Header）：只有星期字（一..日），当天是黑色圆角 pill。
+/// 左侧留出和网格左侧栏一样的宽度（46），星期列才和网格的 7 天列对齐。
+/// showDayByWeekDay 默认 false，所以不显示日期数字。
 struct WeekDateStrip: View {
     let week: Int
-    let monday: Date
+    let isCurrentWeek: Bool
 
     private let weekdayChars = ["一", "二", "三", "四", "五", "六", "日"]
 
-    private func date(of offset: Int) -> Date {
-        Calendar(identifier: .gregorian).date(byAdding: .day, value: offset, to: monday) ?? monday
-    }
-
-    private func isToday(_ date: Date) -> Bool {
-        Calendar(identifier: .gregorian).isDateInToday(date)
+    private var todayIndex: Int {
+        let wd = Calendar(identifier: .gregorian).component(.weekday, from: Date())
+        return wd == 1 ? 7 : wd - 1
     }
 
     var body: some View {
         HStack(spacing: 0) {
             Color.clear.frame(width: 46)
             ForEach(0..<7, id: \.self) { i in
-                let d = date(of: i)
-                let today = isToday(d)
-                VStack(spacing: 2) {
-                    Text(weekdayChars[i])
-                        .font(.system(size: 13))
-                        .foregroundStyle(today ? .white : .black.opacity(0.6))
-                    Text("\(Calendar(identifier: .gregorian).component(.day, from: d))")
-                        .font(.system(size: 15, weight: today ? .bold : .regular))
-                        .foregroundStyle(today ? .white : .black.opacity(0.85))
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 4)
-                .background(today ? Color.black.opacity(0.85) : Color.clear, in: RoundedRectangle(cornerRadius: 10))
+                let today = isCurrentWeek && (i + 1) == todayIndex
+                Text(weekdayChars[i])
+                    .font(.system(size: 13))
+                    .foregroundStyle(today ? .white : .black.opacity(0.6))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 4)
+                    .background(
+                        today
+                            ? Color.black.opacity(0.85)
+                            : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 10)
+                    )
+                    .padding(.horizontal, 10)
             }
         }
     }
