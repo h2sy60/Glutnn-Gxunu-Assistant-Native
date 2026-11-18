@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// 首页（Flutter 版布局）：壁纸上的纯白文字 + 玻璃只做功能层。
-/// 问候 + 日期/学期 + 下节课胶囊 + 三个操作胶囊 + 今日/明日课程（白字行）。
+/// 问候 + 日期/学期 + 下节课胶囊（两行）+ 三个操作胶囊 + 今天/明天课程（按节展开，每节一行，带状态）。
 struct HomeView: View {
     @Environment(AppState.self) private var appState
     @Binding var selectedTab: Int
@@ -12,6 +12,8 @@ struct HomeView: View {
     /// 8 下以上“你慢一点!”+ 5 秒冷却。
     @State private var refreshClickCount = 0
     @State private var refreshCooldown = false
+    /// 正在分段刷新时，再来的刷新请求直接跳过（防重叠）。
+    @State private var isRefreshing = false
 
     /// 今天星期几（1=星期一 … 7=星期日）。
     private var todayWeekday: Int {
@@ -31,7 +33,34 @@ struct HomeView: View {
             .sorted { $0.startSection < $1.startSection }
     }
 
-    /// 问候语（按小时，和 Flutter glassGreeting 一致）。
+    /// 一节课（原版 todaySchedule 是按节展开的：跨两节的课占两行，每节自己的开始/结束时间与状态）。
+    private struct DaySection: Identifiable {
+        let id: Int
+        let course: Course
+        let section: Int
+    }
+
+    /// 今天的每一节（按节次展开并排序）。
+    private var todaySections: [DaySection] {
+        var out: [DaySection] = []
+        for c in todayCourses {
+            for s in c.startSection...c.endSection {
+                out.append(DaySection(id: s, course: c, section: s))
+            }
+        }
+        return out.sorted { $0.section < $1.section }
+    }
+    private var tomorrowSections: [DaySection] {
+        var out: [DaySection] = []
+        for c in tomorrowCourses {
+            for s in c.startSection...c.endSection {
+                out.append(DaySection(id: s, course: c, section: s))
+            }
+        }
+        return out.sorted { $0.section < $1.section }
+    }
+
+    /// 问候语（Flutter glassGreeting 同款：23 点后是“夜深了”）。
     private var greeting: String {
         let hour = Calendar(identifier: .gregorian).component(.hour, from: Date())
         switch hour {
@@ -40,84 +69,133 @@ struct HomeView: View {
         case 9..<12: return "上午好"
         case 12..<14: return "中午好"
         case 14..<18: return "下午好"
-        default: return "晚上好"
+        case 18..<23: return "晚上好"
+        default: return "夜深了"
         }
     }
 
+    /// 日期行（原版 glassDateLine：11月18日 · 周三，用“周X”不是“星期X”）。
     private var dateLine: String {
         let cal = Calendar(identifier: .gregorian)
         let now = Date()
         let m = cal.component(.month, from: now)
         let d = cal.component(.day, from: now)
-        let wd = cal.component(.weekday, from: now)
-        let names = ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"]
-        return "\(m)月\(d)日 · \(names[wd - 1])"
+        let names = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
+        return "\(m)月\(d)日 · \(names[cal.component(.weekday, from: now) - 1])"
     }
 
-    /// 学期行（Flutter 同款）：第 X 周 · 已完成 N%；周 > 20 显示“学期已经结束咯”。
+    /// 学期行（原版 glassSemesterLine 同款公式与文案）：
+    /// 进度 = 周×5% − 5% + 星期/7×5%，取整；提示按周数分段。
     private var semesterLine: String {
         let week = appState.currentWeek
         if week > 20 { return "学期已经结束咯" }
-        let term = appState.semester == "秋" ? "第一学期" : "第二学期"
-        let pct = min(100, week * 100 / 20)
-        return "\(appState.year)-\(appState.year + 1) 学年\(term) · 第 \(week) 周 · 已完成 \(pct)%"
+        if week <= 0 { return "新学期即将到来" }
+        let weekday = Double(todayWeekday)
+        let progress = (Double(week) * 5 / 100) - 0.05 + (weekday / 7 * 5 / 100)
+        let percent = Int(progress * 100)
+        let tip: String
+        if week >= 15 { tip = "期末来临，复习为重" }
+        else if week >= 10 { tip = "学期过半，珍惜当下" }
+        else if week >= 5 { tip = "已过小半，集中精力" }
+        else { tip = "开学不久，好好玩吧" }
+        return "本学期第 \(week) 周 · \(tip) · 已完成 \(percent)%"
     }
 
-    private func startTime(of course: Course) -> (Int, Int) {
+    private func startTime(of section: Int) -> (Int, Int) {
         let list = appState.school.startTimeList
-        guard course.startSection >= 1, course.startSection <= list.count else { return (0, 0) }
-        return list[course.startSection - 1]
+        guard section >= 1, section <= list.count else { return (0, 0) }
+        return list[section - 1]
     }
 
-    private func endTime(of course: Course) -> (Int, Int) {
+    private func endTime(of section: Int) -> (Int, Int) {
         let list = appState.school.endTimeList
-        guard course.endSection >= 1, course.endSection <= list.count else { return (0, 0) }
-        return list[course.endSection - 1]
+        guard section >= 1, section <= list.count else { return (0, 0) }
+        return list[section - 1]
     }
 
-    private func timeRange(_ course: Course) -> String {
-        let s = startTime(of: course)
-        let e = endTime(of: course)
+    private func timeRange(section: Int) -> String {
+        let s = startTime(of: section)
+        let e = endTime(of: section)
         return String(format: "%02d:%02d - %02d:%02d", s.0, s.1, e.0, e.1)
     }
 
-    /// 今天还没结束的最近一节（正在上或即将上）。
-    private var nextCourse: Course? {
+    /// 某一节的状态（原版 lists.dart timeUntilNextClass + timeText 同款口径）。
+    /// 返回右边的文字与状态：before = 还没上，after = 已开始（含已结束）。
+    /// 文案：已结束 / X分后下课 / X分后上课 / X小时后 / ""（4 小时开外不显示）。
+    private func sectionStatus(section: Int) -> (text: String, state: String) {
         let cal = Calendar(identifier: .gregorian)
         let now = Date()
         let nowMin = cal.component(.hour, from: now) * 60 + cal.component(.minute, from: now)
-        for c in todayCourses {
-            let e = endTime(of: c)
-            if nowMin < e.0 * 60 + e.1 { return c }
-        }
-        return nil
-    }
-
-    /// 这节课现在是否正在上（当前时间在开始–结束之间）。
-    private func isNow(_ course: Course) -> Bool {
-        let cal = Calendar(identifier: .gregorian)
-        let now = Date()
-        let nowMin = cal.component(.hour, from: now) * 60 + cal.component(.minute, from: now)
-        let s = startTime(of: course)
-        let e = endTime(of: course)
-        return nowMin >= s.0 * 60 + s.1 && nowMin < e.0 * 60 + e.1
-    }
-
-    private func relativeText(_ course: Course) -> String {
-        let cal = Calendar(identifier: .gregorian)
-        let now = Date()
-        let nowMin = cal.component(.hour, from: now) * 60 + cal.component(.minute, from: now)
-        let s = startTime(of: course)
-        let e = endTime(of: course)
+        let s = startTime(of: section)
+        let e = endTime(of: section)
         let startMin = s.0 * 60 + s.1
         let endMin = e.0 * 60 + e.1
-        if nowMin < startMin {
-            let diff = startMin - nowMin
-            if diff >= 60 { return "\(diff / 60)小时\(diff % 60)分后上课" }
-            return "\(diff)分后上课"
+        let startDiff = startMin - nowMin
+        if startDiff > 0 {
+            if startDiff >= 240 { return ("", "before") }
+            if startDiff >= 60 {
+                let h = startDiff / 60
+                let m = startDiff % 60
+                return (m == 0 ? "\(h)小时后" : "\(h)小时\(m)分后", "before")
+            }
+            return ("\(startDiff)分后上课", "before")
         }
-        if nowMin < endMin { return "\(endMin - nowMin)分后下课" }
-        return "已结束"
+        let endDiff = endMin - nowMin
+        if endDiff > 0 { return ("\(endDiff)分后下课", "after") }
+        return ("已结束", "after")
+    }
+
+    /// 某行右边显示的状态文案（原版 lists.dart 同款规则）：
+    /// 上一行的文案里有“后”（正在倒计时），这一行就不显示，免得满屏都是倒计时。
+    private func statusTextForRow(at index: Int, in sections: [DaySection]) -> String {
+        let (text, _) = sectionStatus(section: sections[index].section)
+        if index > 0 {
+            let (prevText, _) = sectionStatus(section: sections[index - 1].section)
+            if prevText.contains("后") { return "" }
+        }
+        return text
+    }
+
+    /// 某节的图标与颜色（原版 lists.dart icon/timeColor 同款）：
+    /// 未上 = 计时器白字，正在上 = 羽毛笔主题蓝，已结束 = 对勾白 70%。
+    private func sectionIcon(section: Int) -> (name: String, color: Color) {
+        let (text, state) = sectionStatus(section: section)
+        if state == "before" { return ("timer", .white) }
+        if text.contains("下课") { return ("pencil", .blue) }
+        return ("checkmark", Color.white.opacity(0.7))
+    }
+
+    /// 行文字颜色（和图标同一口径）。
+    private func sectionTextColor(section: Int) -> Color {
+        let (text, state) = sectionStatus(section: section)
+        if state == "before" { return .white }
+        if text.contains("下课") { return .blue }
+        return Color.white.opacity(0.7)
+    }
+
+    /// 下节课胶囊的目标（原版 glass.dart GlassNextClassPill 同款循环）：
+    /// 先找第一节还没上的（下节）；没找到就用正在上的那节。
+    /// 注意原版有个小特点：正在上课时，胶囊显示的是下一节的课，但标题还是“正在上”
+    /// （循环里先记下正在上的那节、后遇到未上的又覆盖了目标、标题没改回来）——
+    /// 截图里“正在上 · 固体废弃物 … 24分后上课”就是这么来的，照原版复现，不自作主张改。
+    private var pillTarget: (section: DaySection, isCurrent: Bool)? {
+        var next: DaySection?
+        var isCurrent = false
+        for s in todaySections {
+            let (text, state) = sectionStatus(section: s.section)
+            if state == "before" {
+                next = s
+                break
+            }
+            if state == "after" && next == nil {
+                if !text.contains("已结束") {
+                    next = s
+                    isCurrent = true
+                }
+            }
+        }
+        guard let target = next else { return nil }
+        return (target, isCurrent)
     }
 
     /// 操作胶囊（玻璃圆角矩形 + 图标 + 文字）。
@@ -137,36 +215,82 @@ struct HomeView: View {
         .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 20))
     }
 
-    /// 今日/明日课程行：纯白文字，无卡片。
-    private func courseRow(_ course: Course) -> some View {
-        HStack(alignment: .top, spacing: 12) {
+    /// 今天/明天课程行（原版 lists.dart _TodayCourseListItem 同款）：
+    /// 左图标 + 两行白字（第一行“教室 课名”，第二行“第X节 | 老师”）+ 右边状态文案。
+    private func sectionRow(_ daySection: DaySection, statusText: String) -> some View {
+        let (iconName, iconColor) = sectionIcon(section: daySection.section)
+        let textColor = sectionTextColor(section: daySection.section)
+        let location = daySection.course.location
+            .replacingOccurrences(of: "未知", with: "")
+            .trimmingCharacters(in: .whitespaces)
+        return HStack(alignment: .top, spacing: 0) {
+            Image(systemName: iconName)
+                .font(.system(size: 20))
+                .foregroundStyle(iconColor)
+                .frame(width: 28, alignment: .center)
+                .padding(.trailing, 8)
+                .padding(.top, 2)
             VStack(alignment: .leading, spacing: 3) {
-                Text(course.name)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(.white)
-                Text("\(course.teacher) · \(course.location)")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.white.opacity(0.7))
+                HStack(spacing: 0) {
+                    if !location.isEmpty {
+                        Text(location + " ")
+                            .font(.system(size: 16))
+                            .foregroundStyle(textColor)
+                    }
+                    Text(daySection.course.name)
+                        .font(.system(size: 16))
+                        .foregroundStyle(textColor)
+                        .lineLimit(1)
+                }
+                Text("第\(daySection.section)节 | \(daySection.course.teacher)")
+                    .font(.system(size: 12))
+                    .foregroundStyle(textColor.opacity(0.85))
+                    .lineLimit(1)
             }
             Spacer()
-            Text(timeRange(course))
-                .font(.system(size: 14))
-                .foregroundStyle(.white.opacity(0.75))
+            if !statusText.isEmpty {
+                Text(statusText)
+                    .font(.system(size: 14))
+                    .foregroundStyle(iconColor)
+                    .lineLimit(1)
+                    .padding(.top, 2)
+            }
         }
         .padding(.vertical, 10)
     }
 
     // MARK: - 刷新（原版 home.dart refresh() 同款，带分段提示条）
 
-    /// 点“刷新”胶囊 / 下拉刷新：分段提示条 + 防刷计数。
-    /// 流程：准备更新... →（1 秒后）连接教务... → 获取课表... →
-    /// 成功：处理数据... → 数据已更新!；会话过期且已登录：需要验证（点按弹登录页）；
-    /// 未登录：弹登录页；其他失败：显示错误原文。
-    private func refreshWithFeedback() async {
-        if !appState.isLoggedIn {
+    /// 分段刷新：提示条序列 + 拉课表 + 结果提示。任何触发点都走这里，
+    /// 提示条永远显示（Russell 2026-11-18 10:36：更新一定要显示，不管在哪里，
+    /// 包括回到前台的自动刷新，不静默）。
+    private func performStagedRefresh() async {
+        guard appState.isLoggedIn else {
             appState.showLoginSheet = true
             return
         }
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+        appState.showToast(.loading, "准备更新...", duration: 10)
+        try? await Task.sleep(for: .seconds(1))
+        appState.showToast(.loading, "连接教务...", duration: 10)
+        appState.showToast(.loading, "获取课表...", duration: 10)
+        let wasLoggedIn = appState.isLoggedIn
+        await appState.refreshSchedule()
+        if appState.scheduleError == nil {
+            appState.showToast(.loading, "处理数据...", duration: 10)
+            appState.showToast(.success, "数据已更新!", duration: 1)
+        } else if wasLoggedIn {
+            // 会话过期：原版弹“需要验证”玻璃条，点按弹验证码弹窗（不是整页登录）。
+            appState.showToast(.error, "需要验证", duration: 10, action: .reverify)
+        } else {
+            appState.showToast(.error, appState.scheduleError ?? "拉取失败", duration: 4)
+        }
+    }
+
+    /// 点“刷新”胶囊 / 下拉刷新：防刷计数 + 分段刷新。
+    private func refreshWithFeedback() async {
         refreshClickCount += 1
         if refreshClickCount == 7 {
             appState.showToast(.error, "你太快了!")
@@ -184,29 +308,15 @@ struct HomeView: View {
             }
             return
         }
-        appState.showToast(.loading, "准备更新...", duration: 10)
-        try? await Task.sleep(for: .seconds(1))
-        appState.showToast(.loading, "连接教务...", duration: 10)
-        appState.showToast(.loading, "获取课表...", duration: 10)
-        let wasLoggedIn = appState.isLoggedIn
-        await appState.refreshSchedule()
-        if appState.scheduleError == nil {
-            appState.showToast(.loading, "处理数据...", duration: 10)
-            appState.showToast(.success, "数据已更新!", duration: 1)
-        } else if wasLoggedIn {
-            // 会话过期：原版弹“需要验证”玻璃条，点按回首页重新登录。
-            appState.showToast(.error, "需要验证", duration: 10, action: .showLogin)
-        } else {
-            appState.showToast(.error, appState.scheduleError ?? "拉取失败", duration: 4)
-        }
+        await performStagedRefresh()
         refreshClickCount = 0
     }
 
-    /// 回到前台时静默刷新一次（原版 layout.dart：AppLifecycleState.resumed 时
-    /// reinitialize(refreshState: true)）。不弹提示条，不打扰。
+    /// 回到前台时刷新一次（原版 layout.dart：AppLifecycleState.resumed 时
+    /// reinitialize(refreshState: true)）。和手动刷新一样显示提示条，不静默。
     private func refreshOnForeground() {
         guard appState.isLoggedIn else { return }
-        Task { await appState.refreshSchedule() }
+        Task { await performStagedRefresh() }
     }
 
     var body: some View {
@@ -251,21 +361,37 @@ struct HomeView: View {
                     .padding(.top, 4)
                     .padding(.horizontal, 20)
 
-                    // 下节课胶囊（正在上 / 下节，Flutter GlassNextClassPill 同款）
-                    if let next = nextCourse {
+                    // 下节课胶囊（原版 GlassNextClassPill 同款，两行）：
+                    // 第一行“正在上/下节 · 课名”，第二行“教室 · 开始-结束 · X分后上课/下课”。
+                    if let pill = pillTarget {
+                        let relative = sectionStatus(section: pill.section.section).text
+                        let location = pill.section.course.location
+                            .replacingOccurrences(of: "未知", with: "")
+                            .trimmingCharacters(in: .whitespaces)
                         Button { selectedTab = 1 } label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: "clock")
+                            HStack(spacing: 10) {
+                                Image(systemName: pill.isCurrent ? "pencil" : "timer")
+                                    .font(.system(size: 20))
                                     .foregroundStyle(.white)
-                                Text("\(isNow(next) ? "正在上" : "下节") · \(next.name) · \(next.location) · \(timeRange(next)) · \(relativeText(next))")
-                                    .font(.system(size: 15, weight: .semibold))
-                                    .foregroundStyle(.white)
-                                    .lineLimit(1)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("\(pill.isCurrent ? "正在上" : "下节") · \(pill.section.course.name)")
+                                        .font(.system(size: 15, weight: .bold))
+                                        .foregroundStyle(.white)
+                                        .lineLimit(1)
+                                    Text("\(location.isEmpty ? "" : "\(location) · ")\(timeRange(section: pill.section.section))\(relative.isEmpty ? "" : " · \(relative)")")
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(.white.opacity(0.7))
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .foregroundStyle(.white.opacity(0.7))
                             }
-                            .padding(.horizontal, 18)
+                            .padding(.horizontal, 16)
                             .padding(.vertical, 12)
                         }
-                        .glassEffect(.regular, in: Capsule())
+                        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 20))
                         .padding(.top, 20)
                         .padding(.horizontal, 20)
                     }
@@ -293,14 +419,14 @@ struct HomeView: View {
                     .padding(.top, 16)
                     .padding(.horizontal, 20)
 
-                    // 今日课程
-                    Text("今日课程")
+                    // 今天的
+                    Text("今天的")
                         .font(.system(size: 18, weight: .bold))
                         .foregroundStyle(.white)
                         .padding(.top, 24)
                         .padding(.horizontal, 20)
 
-                    if todayCourses.isEmpty {
+                    if todaySections.isEmpty {
                         Text("今天没有课")
                             .font(.system(size: 15))
                             .foregroundStyle(.white.opacity(0.7))
@@ -308,9 +434,9 @@ struct HomeView: View {
                             .padding(.horizontal, 20)
                     } else {
                         VStack(spacing: 0) {
-                            ForEach(todayCourses) { course in
-                                courseRow(course)
-                                if course.id != todayCourses.last?.id {
+                            ForEach(Array(todaySections.enumerated()), id: \.element.id) { index, daySection in
+                                sectionRow(daySection, statusText: statusTextForRow(at: index, in: todaySections))
+                                if daySection.id != todaySections.last?.id {
                                     Divider().background(Color.white.opacity(0.15))
                                 }
                             }
@@ -318,14 +444,14 @@ struct HomeView: View {
                         .padding(.horizontal, 20)
                     }
 
-                    // 明日课程
-                    Text("明日课程")
+                    // 明天的
+                    Text("明天的")
                         .font(.system(size: 18, weight: .bold))
                         .foregroundStyle(.white)
                         .padding(.top, 20)
                         .padding(.horizontal, 20)
 
-                    if tomorrowCourses.isEmpty {
+                    if tomorrowSections.isEmpty {
                         Text("明天没有课")
                             .font(.system(size: 15))
                             .foregroundStyle(.white.opacity(0.7))
@@ -333,9 +459,9 @@ struct HomeView: View {
                             .padding(.horizontal, 20)
                     } else {
                         VStack(spacing: 0) {
-                            ForEach(tomorrowCourses) { course in
-                                courseRow(course)
-                                if course.id != tomorrowCourses.last?.id {
+                            ForEach(tomorrowSections) { daySection in
+                                sectionRow(daySection, statusText: "")
+                                if daySection.id != tomorrowSections.last?.id {
                                     Divider().background(Color.white.opacity(0.15))
                                 }
                             }
