@@ -73,7 +73,7 @@ struct ScheduleView: View {
                     } label: {
                         Text("导出")
                             .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(.black87)
+                            .foregroundStyle(Color.black.opacity(0.87))
                             .padding(.horizontal, 16)
                             .padding(.vertical, 10)
                     }
@@ -85,10 +85,10 @@ struct ScheduleView: View {
                         HStack(spacing: 2) {
                             Text(todayDateText)
                                 .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(.black87)
+                                .foregroundStyle(Color.black.opacity(0.87))
                             Image(systemName: "mappin.circle.fill")
                                 .font(.system(size: 15))
-                                .foregroundStyle(.black87)
+                                .foregroundStyle(Color.black.opacity(0.87))
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
