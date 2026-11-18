@@ -297,7 +297,11 @@ final class AppState {
             dismissToast()
             showLoginSheet = true
         } else if t.action == .reverify {
-            dismissToast()
+            // 立刻给反馈：重登要走好几步网络（GXVNU 拿登录页、拿公钥、POST、
+            // 探针），得好几秒；只关提示条不给新提示，用户会以为点了没反应
+            // （Russell 2026-11-18 12:30：职师院“需要验证”点了没反应）。
+            // 先换成“正在验证...”，结果出来再被成功/失败/弹窗替换。
+            showToast(.loading, "正在验证...", duration: 30)
             Task { await requestReverification() }
         } else {
             dismissToast()
@@ -442,6 +446,8 @@ final class AppState {
             if captchaImageData != nil {
                 captchaDialogText = ""
                 captchaChecking = false
+                // 关掉“正在验证...”，不然它浮在验证码弹窗上面。
+                dismissToast()
                 showCaptchaDialog = true
             } else {
                 showToast(.error, "验证码获取失败，请稍后重试", duration: 4)
@@ -468,8 +474,11 @@ final class AppState {
             if captchaImageData != nil {
                 captchaDialogText = ""
                 captchaChecking = false
+                // 关掉“正在验证...”，不然它浮在验证码弹窗上面。
+                dismissToast()
                 showCaptchaDialog = true
             } else {
+                dismissToast()
                 showLoginSheet = true
             }
         case .failure(let message):
