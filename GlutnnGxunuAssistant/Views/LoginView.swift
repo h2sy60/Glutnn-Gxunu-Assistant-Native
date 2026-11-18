@@ -29,8 +29,11 @@ struct LoginView: View {
                 WallpaperBackground()
                     .ignoresSafeArea()
 
-                ScrollView {
-                    VStack(spacing: 20) {
+                // 登录表单不用 ScrollView：ScrollView 会在键盘弹起时自动把内容往上
+                // 滚、把顶栏顶出屏幕（build 32 只加 .ignoresSafeArea(.keyboard) 没用，
+                // 滚是焦点驱动的，不吃 safe area）。表单满打满算不到 500pt，
+                // 小屏也放得下，直接用 VStack，键盘再也顶不动它。
+                VStack(spacing: 20) {
                         // 学校名（44pt 白字 + 阴影）+ 右上角关闭钮（旧版登录页同款：点 X 回首页，不用登录也能看）。
                         HStack(alignment: .center) {
                             Text(appState.school.displayName)
@@ -116,7 +119,7 @@ struct LoginView: View {
                                         Image(uiImage: uiImage)
                                             .resizable()
                                             .scaledToFit()
-                                            .frame(width: 100, height: 40)
+                                            .frame(width: 80, height: 28)
                                             .clipShape(RoundedRectangle(cornerRadius: 8))
                                             .onTapGesture {
                                                 Task { await appState.fetchCaptcha() }
@@ -124,7 +127,7 @@ struct LoginView: View {
                                     } else {
                                         RoundedRectangle(cornerRadius: 8)
                                             .fill(Color.white.opacity(0.2))
-                                            .frame(width: 100, height: 40)
+                                            .frame(width: 80, height: 28)
                                             .overlay(Text("点我刷新").font(.caption).foregroundStyle(.white))
                                             .onTapGesture {
                                                 Task { await appState.fetchCaptcha() }
@@ -171,10 +174,11 @@ struct LoginView: View {
                             .padding(.top, 8)
                     }
                     .padding(.horizontal, 20)
-                }
-                // 键盘弹起时不把整页顶上去（Russell 2026-11-18 10:57：输入账号密码会抬高，
-                // 可以不抬高）。表单在屏幕上半部分，键盘盖不住输入框，不用自动避让。
-                .ignoresSafeArea(.keyboard)
+                    // 顶对齐、占满屏：没有 ScrollView 兜底，VStack 自己要钉在顶部。
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    // 键盘弹起时不把整页顶上去（Russell 2026-11-18 10:57：输入账号密码会抬高，
+                    // 可以不抬高）。表单在屏幕上半部分，键盘盖不住输入框，不用自动避让。
+                    .ignoresSafeArea(.keyboard)
             }
             .navigationBarHidden(true)
         }

@@ -251,6 +251,15 @@ final class AppState {
     var loginLoading = false
     var loginError: String?
 
+    /// 当前 Tab（0=一览，1=课表，2=我的）。放 AppState 而不是 ContentView 的 @State，
+    /// 因为窗口级的亮/暗模式要跟着它走：系统底栏是 UITabBar（UIKit），只认窗口的
+    /// trait，不认 TabView 上的 .preferredColorScheme（build 32 实测无效）。
+    /// 窗口在课表页切亮色，底栏就是浅色玻璃；回首页/我的切回深色。
+    /// 依据：WWDC25 219「小号铬（导航/标签栏）随背景在浅色↔深色之间翻转」、
+    /// 323「玻璃随下方内容自动适配、由浅入深」；TabView 是 UITabBarController 的
+    /// 包装，底栏外观由 UITabBar 管理（见 Apple 文档与社区验证）。
+    var selectedTab = 0
+
     /// 是否弹出登录页（全屏，可关闭；旧版登录页就是 push 进来、右上角有关闭钮的页面，不是门禁）。
     /// 首页三个胶囊和“请先登录”在未登录时把它置 true；登录成功后 LoginView 自己关掉。
     var showLoginSheet = false
@@ -599,28 +608,33 @@ final class AppState {
     /// 回到未登录态，并直接打开登录页让用户输新账号。
     /// （旧 logout 只清状态不开登录页，点完像没反应——就是 Russell 说的“坏了”。
     /// 另外旧 logout 用 clearAll 会连另一所学校的账号一起清掉。）
+    ///
+    /// 顺序是关键（build 32 的教训：先清完再弹页，闪退）：
+    /// 先把轻量字段清掉（学号/密码/名字/报错——登录页打开就是空表单），
+    /// 再弹登录页；课表/成绩/缓存/Cookie 这些会触发大面积重渲染和共享
+    /// 状态改动的，等登录页盖住屏幕后再清。弹页和清数据不再挤在同一拍里。
     func switchAccount() {
-        CredentialsStore.clear(schoolId: school.id)
-        ScheduleStore.clear(schoolId: school.id)
         isLoggedIn = false
         studentId = ""
         password = ""
         studentName = ""
-        courses = []
-        scores = []
-        scoresError = nil
-        scheduleError = nil
         loginError = nil
         captchaImageData = nil
         captchaText = ""
         captchaDialogText = ""
         showCaptcha = false
         showCaptchaDialog = false
-        NetworkClient.shared.cookies.clearAll()
-        // 登录页晚一拍再弹：清状态和弹整页放同一拍里会闪退（build 31 实测），
-        // 先让这一轮状态落定，下个 runloop 再弹。
+        // 先弹登录页（这时 App 状态还是稳定的）。
+        showLoginSheet = true
+        // 再清重数据（登录页盖着，看不到下面的重渲染）。
         Task { @MainActor in
-            showLoginSheet = true
+            CredentialsStore.clear(schoolId: school.id)
+            ScheduleStore.clear(schoolId: school.id)
+            courses = []
+            scores = []
+            scoresError = nil
+            scheduleError = nil
+            NetworkClient.shared.cookies.clearAll()
         }
     }
 

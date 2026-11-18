@@ -1,31 +1,32 @@
 import SwiftUI
 import UIKit // 仅用于把验证码图片 Data 解成 UIImage 再交给 SwiftUI Image 显示。
 
-/// 根视图：三个 Tab 常驻（一览 / 课表 / 我的），不登录也能进。
+/// 根视图：三个 Tab（一览 / 课表 / 我的），不登录也能进。
 /// 旧版 Flutter 就是这样：启动读本地缓存直接进首页，登录只是 push 进来的一个页面，
 /// 右上角有关闭钮；只有点刷新/成绩/考试且未登录时，才弹登录页。
-/// iOS 26 的 TabView 自带 Liquid Glass 底栏，无需手写。
+/// 用系统 TabView（iOS 26 液态玻璃底栏）。build 33 曾改成手写底栏，
+/// Russell 明确不要——系统底栏才是对的，颜色问题另想办法，不许再自己画底栏。
 struct ContentView: View {
     @Environment(AppState.self) private var appState
-    @State private var selectedTab = 0
+
+    /// Tab 选中态存在 AppState（不是本地 @State），因为 App 入口的窗口级
+    /// .preferredColorScheme 要读它——系统底栏（UITabBar）只跟窗口走。
+    private var selectedTab: Binding<Int> {
+        Binding(get: { appState.selectedTab }, set: { appState.selectedTab = $0 })
+    }
 
     var body: some View {
-        TabView(selection: $selectedTab) {
-            Tab("一览", systemImage: "house.fill", value: 0) {
-                HomeView(selectedTab: $selectedTab)
-            }
-            Tab("课表", systemImage: "calendar", value: 1) {
-                ScheduleView()
-            }
-            Tab("我的", systemImage: "person.fill", value: 2) {
-                MineView()
-            }
+        TabView(selection: selectedTab) {
+            HomeView(selectedTab: selectedTab)
+                .tabItem { Label("一览", systemImage: "house.fill") }
+                .tag(0)
+            ScheduleView()
+                .tabItem { Label("课表", systemImage: "calendar") }
+                .tag(1)
+            MineView()
+                .tabItem { Label("我的", systemImage: "person.fill") }
+                .tag(2)
         }
-        .tint(.white)
-        // 底栏玻璃跟着当前页走：课表是白底页，底栏要是深色玻璃就灰一块（build 31 图里
-        // 圈出来的底栏就是这么灰的）；切到课表时整 TabView 用亮色，底栏变浅色玻璃，
-        // 回首页/我的页恢复深色。只影响当前可见的页，离屏的页不参与。
-        .preferredColorScheme(selectedTab == 1 ? .light : .dark)
         .fullScreenCover(isPresented: Binding(
             get: { appState.showLoginSheet },
             set: { appState.showLoginSheet = $0 }

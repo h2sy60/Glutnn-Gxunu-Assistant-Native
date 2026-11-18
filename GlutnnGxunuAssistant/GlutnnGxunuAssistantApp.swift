@@ -42,8 +42,14 @@ struct GlutnnGxunuAssistantApp: App {
                 ContentView()
                     .environment(appState)
             }
-            // 全 App 强制深色：白字只在深色底上才看得见（自查：不强制深色 + 浅色模式 = 全白看不见）。
-            .preferredColorScheme(.dark)
+            // 窗口级亮/暗模式跟着当前 Tab 走：课表是白底页，窗口切亮色，
+            // 系统底栏（UITabBar，只认窗口 trait）就变浅色玻璃；
+            // 首页/我的切回深色，白字才看得见。
+            // 依据：TabView 是 UITabBarController 的包装，底栏是 UITabBar，
+            // TabView 上的 .preferredColorScheme 只影响 SwiftUI 子树、不动底栏
+            // （build 32 实测）；窗口级 .preferredColorScheme 改的是窗口 trait，
+            // 底栏跟着翻。WWDC25 219/323：小号玻璃铬随背景在浅色↔深色之间翻转。
+            .preferredColorScheme(appState.selectedTab == 1 ? .light : .dark)
             .task {
                 // 启动恢复：有已存账号就自动登录（职师院直接进，桂工预填 + 取验证码图）。
                 await appState.tryAutoLogin()
