@@ -36,6 +36,18 @@ struct HomeView: View {
             .sorted { $0.startSection < $1.startSection }
     }
 
+    /// 待考的考试（build 60，旧项目 ExamsTipsBar 同款意图，但旧项目只显示
+    /// 写死的占位卡片；原生显示真实数据）。按时间排，最多 3 场。
+    /// 时间串以日期开头（YYYY-MM-DD），字典序即时间序；“时间待定”
+    /// 排最后。
+    private var upcomingExams: [ExamItem] {
+        appState.exams
+            .filter { !$0.isPast }
+            .sorted { $0.time < $1.time }
+            .prefix(3)
+            .map { $0 }
+    }
+
     /// 一节课（原版 todaySchedule 是按节展开的：跨两节的课占两行，每节自己的开始/结束时间与状态）。
     private struct DaySection: Identifiable {
         let id: Int
@@ -105,13 +117,15 @@ struct HomeView: View {
     }
 
     private func startTime(of section: Int) -> (Int, Int) {
-        let list = appState.school.startTimeList
+        // build 60：用生效时间（时间管理改过就用自定义，否则学校默认作息）。
+        let list = appState.school.effectiveStartTimeList
         guard section >= 1, section <= list.count else { return (0, 0) }
         return list[section - 1]
     }
 
     private func endTime(of section: Int) -> (Int, Int) {
-        let list = appState.school.endTimeList
+        // build 60：同上。
+        let list = appState.school.effectiveEndTimeList
         guard section >= 1, section <= list.count else { return (0, 0) }
         return list[section - 1]
     }
@@ -436,6 +450,54 @@ struct HomeView: View {
                     .padding(.top, 16)
                     .padding(.horizontal, 16)
 
+                    // 近期考试（build 60，旧项目 ExamsTipsBar 同款位置：首页胶囊下方）。
+                    // 只在登录且有待考考试时出现，点按进完整考试列表。
+                    if appState.isLoggedIn, !upcomingExams.isEmpty {
+                        Text("近期考试")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.top, 24)
+                            .padding(.horizontal, 20)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        VStack(spacing: 0) {
+                            ForEach(upcomingExams) { exam in
+                                Button {
+                                    showExams = true
+                                } label: {
+                                    HStack(spacing: 12) {
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text(exam.courseName)
+                                                .font(.system(size: 16, weight: .semibold))
+                                                .foregroundStyle(.white)
+                                                .lineLimit(1)
+                                            Text(exam.time)
+                                                .font(.system(size: 13))
+                                                .foregroundStyle(.white.opacity(0.7))
+                                                .lineLimit(1)
+                                            if !exam.location.isEmpty {
+                                                Text(exam.location)
+                                                    .font(.system(size: 13))
+                                                    .foregroundStyle(.white.opacity(0.7))
+                                                    .lineLimit(1)
+                                            }
+                                        }
+                                        Spacer()
+                                        Image(systemName: "chevron.right")
+                                            .font(.system(size: 14, weight: .semibold))
+                                            .foregroundStyle(.white.opacity(0.7))
+                                    }
+                                    .padding(.vertical, 10)
+                                    .padding(.horizontal, 20)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                if exam.id != upcomingExams.last?.id {
+                                    Divider().background(Color.white.opacity(0.15))
+                                }
+                            }
+                        }
+                    }
+
                     // 今日课程（Russell 2026-11-18 10:56：改回今日课程/明日课程）
                     Text("今日课程")
                         .font(.system(size: 18, weight: .bold))
@@ -505,6 +567,13 @@ struct HomeView: View {
             }
             .refreshable {
                 await refreshWithFeedback()
+            }
+            .task {
+                // 近期考试条要数据：登录后、还没拉过考试时静默拉一次。
+                // 失败也不弹提示，条子不出现就是了。
+                if appState.isLoggedIn, appState.exams.isEmpty, appState.examsError == nil {
+                    await appState.refreshExams()
+                }
             }
             .toolbar(.hidden, for: .navigationBar)
             .navigationDestination(isPresented: $showExams) {
