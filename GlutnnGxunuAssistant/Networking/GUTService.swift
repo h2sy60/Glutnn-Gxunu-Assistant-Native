@@ -742,4 +742,62 @@ enum GUTService {
               let r = Range(match.range(at: 0), in: html) else { return nil }
         return String(html[r])
     }
+
+    // MARK: - 学生姓名
+
+    /// 取学生姓名（build 59 新增，按旧项目 getStudentName，旧项目已验证）。
+    /// 旧项目在登录后调 getStudentName：GET 学生信息页，
+    /// 取 [name="realname"] 的父节点文本。失败返回 nil（不抛错，名字只是点缀）。
+    static func fetchStudentName() async -> String? {
+        guard let url = school.url("/academic/student/studentinfo/studentInfoModifyIndex.do", query: ["frombase": "0", "wantTag": "0"]) else {
+            return nil
+        }
+        do {
+            let (data, response) = try await client.get(url)
+            guard let html = decodeGUTHTML(data, response: response), !html.isEmpty else { return nil }
+            if isGUTSessionExpired(response: response, html: html) { return nil }
+            return parseStudentNameHTML(html)
+        } catch {
+            return nil
+        }
+    }
+
+    /// 解析学生信息页取姓名（旧项目：[name="realname"] 的父节点文本）。
+    static func parseStudentNameHTML(_ html: String) -> String? {
+        // 策略一：含 name="realname" 的 <td>，去标签取文本（即父节点文本）。
+        if let tdRegex = try? NSRegularExpression(
+            pattern: #"<td[^>]*>([\s\S]*?)</td>"#,
+            options: [.caseInsensitive, .dotMatchesLineSeparators]) {
+            let range = NSRange(html.startIndex..., in: html)
+            for match in tdRegex.matches(in: html, options: [], range: range) {
+                guard match.numberOfRanges >= 2,
+                      let r = Range(match.range(at: 1), in: html) else { continue }
+                let cellHTML = String(html[r])
+                guard cellHTML.contains("realname") else { continue }
+                let text = stripTags(cellHTML).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty { return text }
+            }
+        }
+        // 策略二：input 的 value 属性。
+        if let inputRegex = try? NSRegularExpression(
+            pattern: #"<[^>]*name\s*=\s*"realname"[^>]*value\s*=\s*"([^"]*)""#,
+            options: [.caseInsensitive]),
+            let match = inputRegex.firstMatch(in: html, options: [], range: NSRange(html.startIndex..., in: html)),
+            match.numberOfRanges >= 2,
+            let r = Range(match.range(at: 1), in: html) {
+            let value = String(html[r]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty { return value }
+        }
+        // 策略三：name="realname" 元素自身的直接文本。
+        if let textRegex = try? NSRegularExpression(
+            pattern: #"<[^>]*name\s*=\s*"realname"[^>]*>([^<]*)"#,
+            options: [.caseInsensitive]),
+            let match = textRegex.firstMatch(in: html, options: [], range: NSRange(html.startIndex..., in: html)),
+            match.numberOfRanges >= 2,
+            let r = Range(match.range(at: 1), in: html) {
+            let text = String(html[r]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty { return text }
+        }
+        return nil
+    }
 }
