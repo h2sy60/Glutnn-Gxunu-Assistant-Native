@@ -251,6 +251,15 @@ final class AppState {
     var loginLoading = false
     var loginError: String?
 
+    /// 当前 Tab（0=一览，1=课表，2=我的）。放 AppState 而不是 ContentView 的 @State，
+    /// 因为窗口级的亮/暗模式要跟着它走：系统底栏是 UITabBar（UIKit），只认窗口的
+    /// trait，不认 TabView 上的 .preferredColorScheme（build 32 实测无效）。
+    /// 窗口在课表页切亮色，底栏就是浅色玻璃；回首页/我的切回深色。
+    /// 依据：WWDC25 219「小号铬（导航/标签栏）随背景在浅色↔深色之间翻转」、
+    /// 323「玻璃随下方内容自动适配、由浅入深」；TabView 是 UITabBarController 的
+    /// 包装，底栏外观由 UITabBar 管理（见 Apple 文档与社区验证）。
+    var selectedTab = 0
+
     /// 是否弹出登录页（全屏，可关闭；旧版登录页就是 push 进来、右上角有关闭钮的页面，不是门禁）。
     /// 首页三个胶囊和“请先登录”在未登录时把它置 true；登录成功后 LoginView 自己关掉。
     var showLoginSheet = false
