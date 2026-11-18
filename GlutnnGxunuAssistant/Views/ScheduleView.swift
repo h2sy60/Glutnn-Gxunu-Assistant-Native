@@ -745,7 +745,7 @@ struct ScheduleExportView: View {
                         .foregroundStyle(Color.black.opacity(0.87))
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
-                        .glassEffect(.regular.tint(.white.opacity(0.35)), in: Capsule())
+                        .glassEffect(.regular.tint(.white.opacity(0.25)), in: Capsule())
                         .padding(.bottom, 40)
                 }
             }
