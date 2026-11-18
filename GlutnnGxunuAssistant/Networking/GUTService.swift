@@ -157,9 +157,231 @@ enum GUTService {
             throw ScheduleError.sessionExpired
         }
         AppLogger.shared.log("GUT schedule: bytes=\(data.count), decoded chars=\(html.count)")
-        let courses = try parseScheduleHTML(html)
+        var courses = try parseScheduleHTML(html)
         AppLogger.shared.log("GUT schedule: parsed \(courses.count) courses")
+        // build 60：调课/补课（旧项目 getScheduleChanges）——开关开着、学期
+        // 已开学、且能从课表页拿到班级课表 id 时，把调课变更应用到课表上。
+        // 拿不到 id 或调课接口失败都静默跳过，不影响原课表显示。
+        if showScheduleChange, let scheduleId = extractScheduleId(from: html) {
+            let cal = Calendar(identifier: .gregorian)
+            let termStarted = cal.startOfDay(for: Date()) >= cal.startOfDay(for: school.termStartDate)
+            if termStarted {
+                let changes = await fetchScheduleChanges(id: scheduleId, year: year, semester: semester)
+                if !changes.isEmpty {
+                    courses = applyScheduleChanges(changes, to: courses)
+                    AppLogger.shared.log("GUT schedule: applied \(changes.count) schedule changes, now \(courses.count) courses")
+                }
+            }
+        }
         return courses
+    }
+
+    // MARK: - 调课/课表变更（build 60，按旧项目 getScheduleChanges）
+
+    /// 是否显示调课/补课（旧项目 setting.dart showScheduleChange）。
+    /// 旧项目默认隐藏（"0"），原生跟旧项目：默认关，桂工用户在“我的”页打开。
+    static var showScheduleChange: Bool {
+        get { UserDefaults.standard.bool(forKey: "ShowScheduleChange") }
+        set { UserDefaults.standard.set(newValue, forKey: "ShowScheduleChange") }
+    }
+
+    /// 一条调课/补课变更：把一门课从旧时段移到新时段。
+    /// week 为纯数字周次（如 5）；空字符串表示该侧无课（&nbsp;）。
+    struct ScheduleChange {
+        let courseName: String
+        let teacher: String
+        let oldWeek: Int?
+        let oldWeekday: Int?
+        let oldStartSection: Int
+        let oldEndSection: Int
+        let newWeek: Int?
+        let newWeekday: Int?
+        let newStartSection: Int
+        let newEndSection: Int
+        let newLocation: String
+        /// 备注（旧项目 remark 同款）："第X周;星期X;X-X节 - 调课/补课;地点"。
+        let remark: String
+    }
+
+    /// 从课表页 HTML 里取班级课表 id（旧项目 getSchedule 同款）：
+    /// .button[value='班级课表'] 的 onclick 里 "?..." 查询串中的 id。
+    /// 拿不到返回 nil，调课直接跳过。
+    static func extractScheduleId(from html: String) -> String? {
+        // 先找 value='班级课表' 的按钮，再取它附近的 onclick。
+        guard let buttonRange = html.range(of: #"value=['"]班级课表['"]"#, options: .regularExpression) else { return nil }
+        // onclick 可能在 value 之前或之后，取按钮前后各 600 字符找 onclick。
+        let start = html.index(buttonRange.lowerBound, offsetBy: -600, limitedBy: html.startIndex) ?? html.startIndex
+        let end = html.index(buttonRange.upperBound, offsetBy: 600, limitedBy: html.endIndex) ?? html.endIndex
+        let window = String(html[start..<end])
+        guard let onclickRange = window.range(of: #"onclick\s*=\s*["'][^"']*?["']"#, options: .regularExpression) else { return nil }
+        let onclick = String(window[onclickRange])
+        guard let qRange = onclick.range(of: "?", options: .backwards) else { return nil }
+        let query = String(onclick[qRange.upperBound...]).replacingOccurrences(of: #"["'].*$"#, with: "", options: .regularExpression)
+        for pair in query.split(separator: "&") {
+            let kv = pair.split(separator: "=", maxSplits: 1)
+            if kv.count == 2, kv[0] == "id" { return String(kv[1]) }
+        }
+        return nil
+    }
+
+    /// 拉调课/补课变更（旧项目 getScheduleChanges 同款）。
+    /// GET /academic/manager/coursearrange/showTimetable.do
+    /// （id、yearid=日历年-1980、termid 秋=3/春=1、timetableType=CLASSES、
+    /// sectionType=COMBINE）。失败返回 []，不抛错。
+    static func fetchScheduleChanges(id: String, year: Int, semester: String) async -> [ScheduleChange] {
+        let params = [
+            "id": id,
+            "yearid": String(year - 1980),
+            "termid": semester == "秋" ? "3" : "1",
+            "timetableType": "CLASSES",
+            "sectionType": "COMBINE",
+        ]
+        guard let url = school.url("/academic/manager/coursearrange/showTimetable.do", query: params) else { return [] }
+        let data: Data
+        do {
+            (data, _) = try await client.get(url)
+        } catch {
+            AppLogger.shared.log("GUT schedule changes: network error")
+            return []
+        }
+        guard let html = decodeGUTHTML(data), !html.isEmpty else { return [] }
+        // 出错页（table.error）直接返回空。
+        if html.contains("table.error") || html.contains(#"class="error""#) { return [] }
+        return parseScheduleChangesHTML(html)
+    }
+
+    /// 解析调课页：第 3 张 .infolist_hr 表（下标 2），行是 .infolist_hr_common。
+    /// 标准行 17 格：[2]课名 [4]老师 [8]旧周 [9]旧星期 [10]旧节次
+    /// [13]新周 [14]新星期 [15]新节次 [16]新地点。
+    /// 扩展行 10 格：[1]旧周 [2]旧星期 [3]旧节次 [6]新周 [7]新星期
+    /// [8]新节次 [9]新地点，课名/老师沿用上一条标准行。
+    static func parseScheduleChangesHTML(_ html: String) -> [ScheduleChange] {
+        // 取第 3 张 infolist_hr 表。
+        guard let tableRegex = try? NSRegularExpression(
+            pattern: #"<table[^>]*class="[^"]*infolist_hr[^"]*"[^>]*>([\s\S]*?)</table>"#,
+            options: [.caseInsensitive, .dotMatchesLineSeparators]
+        ) else { return [] }
+        let range = NSRange(html.startIndex..., in: html)
+        let tables = tableRegex.matches(in: html, options: [], range: range)
+        guard tables.count >= 3,
+              tables[2].numberOfRanges >= 2,
+              let tableRange = Range(tables[2].range(at: 1), in: html) else { return [] }
+        let tableHTML = String(html[tableRange])
+        let rows = trRows(tableHTML)
+        var changes: [ScheduleChange] = []
+        var course = ""
+        var teacher = ""
+        for rowHTML in rows {
+            // 行是数据行还是表头行，按格子数区分（17=标准行，10=扩展行），
+            // 表头行是 <th>，tdTexts 取不到格子，自然跳过。
+            let texts = tdTexts(rowHTML)
+            if texts.count == 17 {
+                course = texts[2]
+                teacher = texts[4]
+                if let c = makeChange(course: course, teacher: teacher,
+                                      oldWeek: texts[8], oldWeekday: texts[9], oldPeriods: texts[10],
+                                      newWeek: texts[13], newWeekday: texts[14], newPeriods: texts[15],
+                                      newLocation: texts[16]) {
+                    changes.append(c)
+                }
+            } else if texts.count == 10 {
+                if let c = makeChange(course: course, teacher: teacher,
+                                      oldWeek: texts[1], oldWeekday: texts[2], oldPeriods: texts[3],
+                                      newWeek: texts[6], newWeekday: texts[7], newPeriods: texts[8],
+                                      newLocation: texts[9]) {
+                    changes.append(c)
+                }
+            }
+        }
+        return changes
+    }
+
+    /// 由一行调课数据拼 ScheduleChange。周次含“第/周”或纯数字都解析；
+    /// &nbsp;/空表示该侧无课。旧新两侧都无课的行不要。
+    private static func makeChange(course: String, teacher: String,
+                                   oldWeek: String, oldWeekday: String, oldPeriods: String,
+                                   newWeek: String, newWeekday: String, newPeriods: String,
+                                   newLocation: String) -> ScheduleChange? {
+        guard !course.isEmpty else { return nil }
+        let oldW = parseWeekNumber(oldWeek)
+        let newW = parseWeekNumber(newWeek)
+        guard oldW != nil || newW != nil else { return nil }
+        let oldPeriod = parsePeriods(oldPeriods)
+        let newPeriod = parsePeriods(newPeriods)
+        let oldWd = oldW == nil ? nil : weekdayNumber(from: oldWeekday)
+        let newWd = newW == nil ? nil : weekdayNumber(from: newWeekday)
+        let location = newLocation.contains("nbsp") ? "未知" : newLocation
+        let remarkWeek = newW.map { "第\($0)周" } ?? (oldW.map { "第\($0)周" } ?? "")
+        let remark = "\(remarkWeek);\(newWeekday);\(newPeriods) - 调课/补课;\(location)"
+        return ScheduleChange(
+            courseName: course,
+            teacher: teacher,
+            oldWeek: oldW,
+            oldWeekday: oldWd,
+            oldStartSection: oldPeriod.0,
+            oldEndSection: oldPeriod.1,
+            newWeek: newW,
+            newWeekday: newWd,
+            newStartSection: newPeriod.0,
+            newEndSection: newPeriod.1,
+            newLocation: location,
+            remark: remark
+        )
+    }
+
+    /// 周次文本转数字："5"、"第5周" 都行；&nbsp;/空返回 nil。
+    private static func parseWeekNumber(_ text: String) -> Int? {
+        let digits = text.filter { $0.isNumber }
+        guard !digits.isEmpty else { return nil }
+        return Int(digits)
+    }
+
+    /// 节次文本转 [开始, 结束]："1-2"、"第1-2节" 都行；解析失败返回 (0, 0)。
+    private static func parsePeriods(_ text: String) -> (Int, Int) {
+        let cleaned = text.replacingOccurrences(of: "[第节周单双]", with: "", options: .regularExpression)
+        let parts = cleaned.split(separator: "-").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+        guard parts.count >= 2 else { return (0, 0) }
+        return (parts[0], parts[1])
+    }
+
+    /// 把调课变更应用到课表上（旧项目 getScheduleChanges 同款语义）：
+    /// 旧时段有课就从原课程里删掉那一周（删空整条就删掉）；新时段有课就
+    /// 新加一条（带“调课/补课”备注）。只按周、星期、节次重叠匹配，
+    /// 不改其他周次的同一门课。
+    static func applyScheduleChanges(_ changes: [ScheduleChange], to courses: [Course]) -> [Course] {
+        var result = courses
+        for change in changes {
+            // 删旧时段。
+            if let oldWeek = change.oldWeek,
+               let oldWeekday = change.oldWeekday,
+               change.oldStartSection >= 1 {
+                result = result.compactMap { course in
+                    guard course.name == change.courseName,
+                          course.teacher == change.teacher,
+                          course.weekday == oldWeekday,
+                          course.weeks.contains(oldWeek),
+                          course.startSection <= change.oldEndSection,
+                          course.endSection >= change.oldStartSection else {
+                        return course
+                    }
+                    let weeks = course.weeks.filter { $0 != oldWeek }
+                    guard !weeks.isEmpty else { return nil }
+                    return Course(name: course.name, teacher: course.teacher, location: course.location,
+                                  weekday: course.weekday, startSection: course.startSection,
+                                  endSection: course.endSection, weeks: weeks, extra: course.extra)
+                }
+            }
+            // 加新时段。
+            if let newWeek = change.newWeek,
+               let newWeekday = change.newWeekday,
+               change.newStartSection >= 1 {
+                result.append(Course(name: change.courseName, teacher: change.teacher,
+                                     location: change.newLocation, weekday: newWeekday,
+                                     startSection: change.newStartSection, endSection: change.newEndSection,
+                                     weeks: [newWeek], extra: change.remark))
+            }
+        }
+        return result
     }
 
     // MARK: - 课表 HTML 解析
