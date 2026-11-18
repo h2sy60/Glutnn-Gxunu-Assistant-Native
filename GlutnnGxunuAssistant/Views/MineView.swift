@@ -46,7 +46,7 @@ struct MineView: View {
                                     }
                                     Spacer()
                                     Button("更换账号") {
-                                        appState.logout()
+                                        appState.switchAccount()
                                     }
                                     .font(.subheadline)
                                     .foregroundStyle(.white)
