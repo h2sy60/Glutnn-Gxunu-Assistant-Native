@@ -240,7 +240,6 @@ struct ScheduleView: View {
             }
         }
         .background(Color.white)
-        .contentMargins(.top, 0, for: .scrollContent)
         // 课表是白底黑字的亮色页：整页用亮色模式，导出/日期玻璃药丸才是
         // 原版那种浅色玻璃；整 App 强制深色模式会让它俩变成深灰玻璃，丑。
         .preferredColorScheme(.light)
