@@ -5,8 +5,13 @@ import SwiftUI
 struct HomeView: View {
     @Environment(AppState.self) private var appState
     @Binding var selectedTab: Int
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showExamsAlert = false
     @State private var showScores = false
+    /// 刷新防刷计数（原版 home.dart refresh() 同款）：点 7 下“你太快了!”，
+    /// 8 下以上“你慢一点!”+ 5 秒冷却。
+    @State private var refreshClickCount = 0
+    @State private var refreshCooldown = false
 
     /// 今天星期几（1=星期一 … 7=星期日）。
     private var todayWeekday: Int {
@@ -151,6 +156,59 @@ struct HomeView: View {
         .padding(.vertical, 10)
     }
 
+    // MARK: - 刷新（原版 home.dart refresh() 同款，带分段提示条）
+
+    /// 点“刷新”胶囊 / 下拉刷新：分段提示条 + 防刷计数。
+    /// 流程：准备更新... →（1 秒后）连接教务... → 获取课表... →
+    /// 成功：处理数据... → 数据已更新!；会话过期且已登录：需要验证（点按弹登录页）；
+    /// 未登录：弹登录页；其他失败：显示错误原文。
+    private func refreshWithFeedback() async {
+        if !appState.isLoggedIn {
+            appState.showLoginSheet = true
+            return
+        }
+        refreshClickCount += 1
+        if refreshClickCount == 7 {
+            appState.showToast(.error, "你太快了!")
+            return
+        }
+        if refreshClickCount >= 8 {
+            if !refreshCooldown {
+                refreshCooldown = true
+                appState.showToast(.error, "你慢一点!")
+                Task {
+                    try? await Task.sleep(for: .seconds(5))
+                    refreshClickCount = 0
+                    refreshCooldown = false
+                }
+            }
+            return
+        }
+        appState.showToast(.loading, "准备更新...", duration: 10)
+        try? await Task.sleep(for: .seconds(1))
+        appState.showToast(.loading, "连接教务...", duration: 10)
+        appState.showToast(.loading, "获取课表...", duration: 10)
+        let wasLoggedIn = appState.isLoggedIn
+        await appState.refreshSchedule()
+        if appState.scheduleError == nil {
+            appState.showToast(.loading, "处理数据...", duration: 10)
+            appState.showToast(.success, "数据已更新!", duration: 1)
+        } else if wasLoggedIn {
+            // 会话过期：原版弹“需要验证”玻璃条，点按回首页重新登录。
+            appState.showToast(.error, "需要验证", duration: 10, action: .showLogin)
+        } else {
+            appState.showToast(.error, appState.scheduleError ?? "拉取失败", duration: 4)
+        }
+        refreshClickCount = 0
+    }
+
+    /// 回到前台时静默刷新一次（原版 layout.dart：AppLifecycleState.resumed 时
+    /// reinitialize(refreshState: true)）。不弹提示条，不打扰。
+    private func refreshOnForeground() {
+        guard appState.isLoggedIn else { return }
+        Task { await appState.refreshSchedule() }
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -215,11 +273,7 @@ struct HomeView: View {
                     // 三个操作胶囊（旧版：未登录时点它们弹登录页，登录后才做事）
                     HStack(spacing: 12) {
                         actionChip(icon: "arrow.clockwise", label: "刷新") {
-                            if !appState.isLoggedIn {
-                                appState.showLoginSheet = true
-                            } else {
-                                Task { await appState.refreshSchedule() }
-                            }
+                            Task { await refreshWithFeedback() }
                         }
                         actionChip(icon: "chart.bar.fill", label: "成绩") {
                             if !appState.isLoggedIn {
@@ -307,11 +361,10 @@ struct HomeView: View {
                 }
             }
             .refreshable {
-                if !appState.isLoggedIn {
-                    appState.showLoginSheet = true
-                } else {
-                    await appState.refreshSchedule()
-                }
+                await refreshWithFeedback()
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                if newPhase == .active { refreshOnForeground() }
             }
             .toolbar(.hidden, for: .navigationBar)
             .alert("考试功能即将上线", isPresented: $showExamsAlert) {
