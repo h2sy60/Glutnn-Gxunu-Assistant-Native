@@ -599,28 +599,33 @@ final class AppState {
     /// 回到未登录态，并直接打开登录页让用户输新账号。
     /// （旧 logout 只清状态不开登录页，点完像没反应——就是 Russell 说的“坏了”。
     /// 另外旧 logout 用 clearAll 会连另一所学校的账号一起清掉。）
+    ///
+    /// 顺序是关键（build 32 的教训：先清完再弹页，闪退）：
+    /// 先把轻量字段清掉（学号/密码/名字/报错——登录页打开就是空表单），
+    /// 再弹登录页；课表/成绩/缓存/Cookie 这些会触发大面积重渲染和共享
+    /// 状态改动的，等登录页盖住屏幕后再清。弹页和清数据不再挤在同一拍里。
     func switchAccount() {
-        CredentialsStore.clear(schoolId: school.id)
-        ScheduleStore.clear(schoolId: school.id)
         isLoggedIn = false
         studentId = ""
         password = ""
         studentName = ""
-        courses = []
-        scores = []
-        scoresError = nil
-        scheduleError = nil
         loginError = nil
         captchaImageData = nil
         captchaText = ""
         captchaDialogText = ""
         showCaptcha = false
         showCaptchaDialog = false
-        NetworkClient.shared.cookies.clearAll()
-        // 登录页晚一拍再弹：清状态和弹整页放同一拍里会闪退（build 31 实测），
-        // 先让这一轮状态落定，下个 runloop 再弹。
+        // 先弹登录页（这时 App 状态还是稳定的）。
+        showLoginSheet = true
+        // 再清重数据（登录页盖着，看不到下面的重渲染）。
         Task { @MainActor in
-            showLoginSheet = true
+            CredentialsStore.clear(schoolId: school.id)
+            ScheduleStore.clear(schoolId: school.id)
+            courses = []
+            scores = []
+            scoresError = nil
+            scheduleError = nil
+            NetworkClient.shared.cookies.clearAll()
         }
     }
 
