@@ -142,40 +142,64 @@ enum GXVNUService {
             // 会话被换过：用户输的验证码是对着旧会话取的，已作废。
             return .captchaRequired
         }
+        // 静默登录（captcha 为空）时先读 dlsfbxyzm 标志：若当前 JSESSIONID
+        // 已被服务端锁定必须输验证码，不要浪费一次 RSA+POST，直接清掉
+        // 旧会话拿全新 JSESSIONID；全新会话仍要求验证码，说明全校强制
+        // 开启或 IP 被风控，直接返回 .captchaRequired 弹框。
+        // 用户已输验证码时（captcha 非空）绝不走这里——必须复用取图时的
+        // 同一个 JSESSIONID，否则验证码作废（build 43，专家意见）。
+        if captcha.isEmpty && captchaRequired(html: loginHtml) {
+            clearSession()
+            loginHtml = await getLoginPage()
+            csrftoken = extract(loginHtml, pattern: #"name="csrftoken"[^>]*value="([^"]+)""#)
+            guard let token = csrftoken, !token.isEmpty else { return .failure("登录页异常，请重试") }
+            if captchaRequired(html: loginHtml) {
+                return .captchaRequired
+            }
+        }
         // mmsfjm=1 表示密码要加密；=0 则明文提交。
         var mmsfjm = extract(loginHtml, pattern: #"name="mmsfjm"[^>]*value="([^"]+)""#) ?? "1"
 
         // 拿 RSA 公钥并加密密码（1024 位，PKCS#1 v1.5）。
-        // 浏览器拿公钥是 GET …/login_getPublicKey.html?time=<ms>&_=<ms>
-        // 并且带 X-Requested-With；不带这些时服务器会轮换 JSESSIONID。
-        let sessionBeforeKey = client.cookies.value("JSESSIONID", host: school.host)
-        let now = Date().millisecondsSinceEpoch
-        guard let keyURL = school.url("/xtgl/login_getPublicKey.html", query: ["time": "\(now)", "_": "\(now)"]) else {
-            return .failure("地址无效")
-        }
-        let keyData: Data
-        do {
-            let (data, _) = try await client.get(keyURL, headers: [
-                "X-Requested-With": "XMLHttpRequest",
-                "User-Agent": safariUA,
-                "Accept": "application/json, text/javascript, */*; q=0.01",
-                "Accept-Language": "zh-CN,zh-Hans;q=0.9",
-            ])
-            keyData = data
-        } catch let error as NetworkError {
-            return .failure(error.errorDescription ?? "网络错误")
-        } catch {
-            return .failure("未知异常")
-        }
-        let sessionAfterKey = client.cookies.value("JSESSIONID", host: school.host)
-        if sessionBeforeKey != sessionAfterKey {
-            // 公钥请求轮换了会话：重新拿登录页取新 csrftoken。
+        // 公钥存在服务端当前 HttpSession 里：若 GET 公钥轮换了 JSESSIONID，
+        // 必须重拿登录页（新 csrftoken）再重取一次新会话的公钥，否则用旧
+        // 会话的公钥加密、新会话的私钥解密必定乱码（build 43，专家意见）。
+        // 最多重试一次，避免无限循环。
+        var keyData: Data?
+        var keyFetchOK = false
+        for _ in 0..<2 {
+            let sessionBeforeKey = client.cookies.value("JSESSIONID", host: school.host)
+            let now = Date().millisecondsSinceEpoch
+            guard let keyURL = school.url("/xtgl/login_getPublicKey.html", query: ["time": "\(now)", "_": "\(now)"]) else {
+                return .failure("地址无效")
+            }
+            do {
+                let (data, _) = try await client.get(keyURL, headers: [
+                    "X-Requested-With": "XMLHttpRequest",
+                    "User-Agent": safariUA,
+                    "Accept": "application/json, text/javascript, */*; q=0.01",
+                    "Accept-Language": "zh-CN,zh-Hans;q=0.9",
+                ])
+                keyData = data
+            } catch let error as NetworkError {
+                return .failure(error.errorDescription ?? "网络错误")
+            } catch {
+                return .failure("未知异常")
+            }
+            let sessionAfterKey = client.cookies.value("JSESSIONID", host: school.host)
+            if sessionBeforeKey == sessionAfterKey {
+                keyFetchOK = true
+                break
+            }
+            // 轮换了会话：重拿登录页取新 csrftoken，下轮循环重取新会话的公钥。
             let retryHtml = await getLoginPage()
+            loginHtml = retryHtml
             csrftoken = extract(retryHtml, pattern: #"name="csrftoken"[^>]*value="([^"]+)""#)
             guard let token = csrftoken, !token.isEmpty else { return .failure("登录页异常，请重试") }
             mmsfjm = extract(retryHtml, pattern: #"name="mmsfjm"[^>]*value="([^"]+)""#) ?? "1"
             if !captcha.isEmpty { return .captchaRequired }
         }
+        guard keyFetchOK, let keyData else { return .failure("获取公钥失败") }
         guard let keyJson = try? JSONSerialization.jsonObject(with: keyData) as? [String: Any],
               let modulus = keyJson["modulus"] as? String,
               let exponent = keyJson["exponent"] as? String else {
@@ -225,17 +249,50 @@ enum GXVNUService {
         }
 
         if response.statusCode == 301 || response.statusCode == 302 {
-            let location = response.value(forHTTPHeaderField: "Location") ?? ""
+            let location = (response.value(forHTTPHeaderField: "Location") ?? "").lowercased()
+            // 账号在别处登录被挤下线 / 强制改密码：先排除，不走探针。
+            if location.contains("kickout") {
+                clearSession()
+                return .failure("账号已在其他地方登录，请重新登录")
+            }
+            if location.contains("mmgl") || location.contains("xgmm") {
+                clearSession()
+                return .failure("请先在教务网站修改密码")
+            }
             if location.contains("login_slogin") {
                 // 302 回登录页：先别急着判失败。正确密码回 302、错密码回
                 // 200，说明密码比对已通过，302 发生在登录成功之后：
                 // Shiro 会话固定保护销毁旧会话、下发已认证的新 JSESSIONID。
                 // 带着新 JSESSIONID 再 GET 一次登录页：回的不是登录页
                 // （被 302 到菜单页）= 已登录成功；回的还是登录页 = 真失败。
-                let probeHtml = await getLoginPage()
-                if !isLoginPage(probeHtml) {
+                // 探针必须校验 HTTP 200 + 正文非空 + 不是登录页，否则一律
+                // 不判成功（build 43：旧代码探针网络失败时空串
+                // isLoginPage("")=false，会把失败误判成 .success）。
+                var probeLoggedIn = false
+                var probeNetworkError = false
+                do {
+                    guard let probeURL = school.url("/xtgl/login_slogin.html") else {
+                        return .failure("地址无效")
+                    }
+                    let (probeData, probeResponse) = try await client.get(probeURL, headers: browserHeaders)
+                    let probeHtml = String(data: probeData, encoding: .utf8) ?? ""
+                    if probeResponse.statusCode == 200 && !probeHtml.isEmpty && !isLoginPage(probeHtml) {
+                        probeLoggedIn = true
+                    } else if !isLoginPage(probeHtml) {
+                        // 非 200 或空正文，且不是登录页 = 探针本身失败。
+                        probeNetworkError = true
+                    }
+                    // 是登录页 = 真失败，两个标志都 false，继续走下面分支。
+                } catch {
+                    probeNetworkError = true
+                }
+                if probeLoggedIn {
                     AppLogger.shared.log("GXVNU login success (302 probe)")
                     return .success
+                }
+                if probeNetworkError {
+                    // 探针本身网络失败：登录状态未知，不判成功、不清会话。
+                    return .failure("网络错误，请重试")
                 }
                 // 真失败：这次 POST 的会话已脏，清掉。
                 clearSession()
@@ -259,7 +316,23 @@ enum GXVNUService {
             }
             clearSession()
             AppLogger.shared.log("GXVNU login failure (200): \(tips)")
-            return .failure(tips.isEmpty ? "学号或密码错误" : tips)
+            // 只有 tips 明确说密码不对才报密码错；锁定/次数原样返回；
+            // tips 为空但仍是登录页，报会话已刷新；连登录页都不是，报服务器异常。
+            // （build 43：旧代码 tips 为空时 fallback 成“学号或密码错误”，
+            //  会把网关报错/系统维护都误报成密码错。）
+            if tips.contains("用户名或密码") || tips.contains("不正确") {
+                return .failure("学号或密码错误")
+            }
+            if tips.contains("锁定") || tips.contains("次数") {
+                return .failure(tips)
+            }
+            if !tips.isEmpty {
+                return .failure(tips)
+            }
+            if isLoginPage(bodyText) {
+                return .failure("会话已刷新，请重试")
+            }
+            return .failure("教务服务器响应异常，请稍后重试")
         }
         clearSession()
         return .failure("登录失败（\(response.statusCode)）")
@@ -285,7 +358,10 @@ enum GXVNUService {
     /// 拉课表（JSON）。year 为日历年（如 2026），semester 为 "秋"/"春"。
     /// 会话失效时抛 ScheduleError.sessionExpired。
     static func fetchSchedule(year: Int, semester: String) async throws -> [Course] {
-        guard await isLoggedIn() else { throw ScheduleError.sessionExpired }
+        // build 43：砍掉事前 isLoggedIn() 探针（专家意见）——探针把网络抖动
+        // 当成会话过期。直接发业务请求：收到登录页 HTML 或 302 到登录页
+        // 才抛 sessionExpired；网络错误直接抛 NetworkError（上层提示网络
+        // 异常并保留离线缓存课表）。
         let params = [
             "xnm": yearString(year),
             "xqm": semesterCode(semester),
@@ -294,10 +370,12 @@ enum GXVNUService {
         guard let gnmkdm = school.gnmkdm["课表"] else {
             throw ScheduleError.network("配置缺失")
         }
-        // POST 目标：先试 SDK 端点，失败再 POST 索引页本身。
+        // POST 目标：主端点 + 备用端点（xskbcx_cxXsKb）。
+        // build 43：旧备用端点 xskbcx_cxXsksxxIndex 是考试信息首页（HTML），
+        // 根本不是课表接口，改成真正的备用课表端点。
         let targets = [
             school.url("/kbcx/xskbcx_cxXsgrkb.html", query: ["gnmkdm": gnmkdm]),
-            school.url("/kbcx/xskbcx_cxXsksxxIndex.html", query: ["gnmkdm": gnmkdm]),
+            school.url("/kbcx/xskbcx_cxXsKb.html", query: ["gnmkdm": gnmkdm]),
         ].compactMap { $0 }
 
         var lastError: Error = ScheduleError.parseError
@@ -341,65 +419,65 @@ enum GXVNUService {
 
     // MARK: - 成绩
 
-    /// 查成绩（全部：近 5 学年 × 秋/春，逐页拉完合并，与 Flutter 版一致）。
-    /// 单条字段名未验证（0 条记录），用多键容错取。
+    /// 查成绩（build 43：必须用 POST！GET 必然返回 0 条）。
+    /// xnm="" 且 xqm="" 时，正方一次 POST 直接返回大学四年全部成绩，
+    /// 无需 5 年 × 2 学期循环（专家意见，whx1024/zfn_api12）。
     static func fetchScores(year: Int) async throws -> [CourseScore] {
-        guard await isLoggedIn() else { throw ScheduleError.sessionExpired }
-        var all: [CourseScore] = []
-        for y in (year - 4...year).reversed() {
-            for semester in ["秋", "春"] {
-                var page = 1
-                var totalPage = 1
-                repeat {
-                    let (items, tp) = try await fetchScoresPage(year: y, semester: semester, page: page)
-                    all.append(contentsOf: items)
-                    totalPage = tp
-                    page += 1
-                } while page <= totalPage
+        // year 参数保留（兼容旧调用），实际一次拉全部学年。
+        let gnmkdm = school.gnmkdm["成绩"] ?? "N305005"
+        let endpoints = [
+            "/cjcx/cjcx_cxDgXscj.html",
+            "/cjcx/cjcx_cxXsgrcj.html",
+        ]
+        let nowMs = "\(Date().millisecondsSinceEpoch)"
+        let formBody: [String: String] = [
+            "xnm": "",
+            "xqm": "",
+            "_search": "false",
+            "nd": nowMs,
+            "queryModel.showCount": "500",
+            "queryModel.currentPage": "1",
+            "queryModel.sortName": "",
+            "queryModel.sortOrder": "asc",
+            "time": "0",
+        ]
+        var lastError: Error = ScheduleError.parseError
+        for path in endpoints {
+            guard let url = school.url(path, query: ["doType": "query", "gnmkdm": gnmkdm]) else { continue }
+            do {
+                let (data, response) = try await client.postForm(url, form: formBody, headers: browserHeaders)
+                if response.statusCode == 301 || response.statusCode == 302 {
+                    let loc = (response.value(forHTTPHeaderField: "Location") ?? "").lowercased()
+                    if loc.contains("login") { throw ScheduleError.sessionExpired }
+                }
+                guard response.statusCode == 200 else {
+                    throw ScheduleError.network("成绩接口返回 HTTP \(response.statusCode)")
+                }
+                let text = String(data: data, encoding: .utf8) ?? ""
+                if isLoginPage(text) { throw ScheduleError.sessionExpired }
+                guard let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let items = decoded["items"] as? [[String: Any]] else {
+                    lastError = ScheduleError.parseError
+                    continue
+                }
+                // 成功拿到 items（即使为空数组也代表接口正常、真没成绩）。
+                let scores = items.compactMap { scoreFromItem($0) }
+                AppLogger.shared.log("GXVNU scores: total \(scores.count) items")
+                return scores
+            } catch let error as ScheduleError {
+                // 会话过期立即抛，不试备用端点；其他错误记下、试下一个端点。
+                if error == .sessionExpired { throw error }
+                lastError = error
+            } catch let error as NetworkError {
+                lastError = ScheduleError.network(error.errorDescription ?? "网络错误")
+            } catch {
+                lastError = ScheduleError.parseError
             }
         }
-        AppLogger.shared.log("GXVNU scores: total \(all.count) items")
-        return all
+        throw lastError
     }
 
-    /// 单页成绩。返回（本页成绩，总页数）。
-    private static func fetchScoresPage(year: Int, semester: String, page: Int) async throws -> ([CourseScore], Int) {
-        guard let gnmkdm = school.gnmkdm["成绩"],
-              let url = school.url("/cjcx/cjcx_cxDgXscj.html", query: [
-                "doType": "query",
-                "gnmkdm": gnmkdm,
-                "xnm": yearString(year),
-                "xqm": semesterCode(semester),
-                "queryModel.showCount": "15",
-                "queryModel.currentPage": "\(page)",
-                "_search": "false",
-                "nd": "\(Date().millisecondsSinceEpoch)",
-              ]) else {
-            throw ScheduleError.network("地址无效")
-        }
-        let data: Data
-        do {
-            (data, _) = try await client.get(url, headers: browserHeaders)
-        } catch let error as NetworkError {
-            throw ScheduleError.network(error.errorDescription ?? "网络错误")
-        }
-        let body = String(data: data, encoding: .utf8) ?? ""
-        if isLoginPage(body) { throw ScheduleError.sessionExpired }
-        guard let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw ScheduleError.parseError
-        }
-        let items = decoded["items"] as? [[String: Any]] ?? []
-        let totalPage = (decoded["totalPage"] as? NSNumber)?.intValue ?? 1
-        if page == 1 {
-            AppLogger.shared.log("GXVNU scores \(year) \(semester): items=\(items.count) totalPage=\(totalPage)")
-            if let first = items.first {
-                AppLogger.shared.log("GXVNU scores first item keys: \(first.keys.sorted().joined(separator: ","))")
-            }
-        }
-        return (items.compactMap { scoreFromItem($0) }, totalPage)
-    }
-
-    /// 单条成绩（字段名未验证，多键容错）。
+    /// 单条成绩（字段名按专家给的正方 V9 真实字段，多键容错）。
     private static func scoreFromItem(_ item: [String: Any]) -> CourseScore? {
         func pick(_ keys: [String]) -> String {
             for k in keys {
@@ -410,7 +488,7 @@ enum GXVNUService {
         }
         let courseName = pick(["kcmc"])
         guard !courseName.isEmpty else { return nil }
-        let rawScore = pick(["cj", "cjmc", "cjz"])
+        let rawScore = pick(["cj", "bfzcj", "cjmc", "cjz"])
         return CourseScore(
             courseCode: pick(["kch", "kch_id"]),
             courseName: courseName,
@@ -419,8 +497,103 @@ enum GXVNUService {
             rawScore: rawScore,
             gradePoint: Double(pick(["jd"])) ?? 0,
             credit: Double(pick(["xf"])) ?? 0,
-            courseCategory: pick(["kcxzmc", "kclbmc", "kcxz"])
+            courseCategory: pick(["kcxzmc", "kclbmc", "ksxz", "kcxz"])
         )
+    }
+
+    // MARK: - 考试
+
+    /// 查考试安排（build 43 新增，专家给的正方 V9 接口规范）。
+    /// POST /kwgl/kscx_cxXsksxxIndex.html?doType=query&gnmkdm=N358105。
+    static func fetchExams(year: Int, semester: String) async throws -> [ExamItem] {
+        let gnmkdm = school.gnmkdm["考试"] ?? "N358105"
+        guard let url = school.url("/kwgl/kscx_cxXsksxxIndex.html", query: [
+            "doType": "query",
+            "gnmkdm": gnmkdm,
+        ]) else {
+            throw ScheduleError.network("考试接口地址无效")
+        }
+        let xqm: String
+        switch semester {
+        case "秋": xqm = "3"
+        case "春": xqm = "12"
+        case "夏": xqm = "16"
+        default: xqm = ""
+        }
+        let formBody: [String: String] = [
+            "xnm": "\(year)",
+            "xqm": xqm,
+            "ksmcdmb_id": "",
+            "kch": "",
+            "kc": "",
+            "ksrq": "",
+            "kkbm_id": "",
+            "_search": "false",
+            "nd": "\(Date().millisecondsSinceEpoch)",
+            "queryModel.showCount": "100",
+            "queryModel.currentPage": "1",
+            "queryModel.sortName": "",
+            "queryModel.sortOrder": "asc",
+            "time": "0",
+        ]
+        let (data, response) = try await client.postForm(url, form: formBody, headers: browserHeaders)
+        if response.statusCode == 301 || response.statusCode == 302 {
+            throw ScheduleError.sessionExpired
+        }
+        guard response.statusCode == 200 else {
+            throw ScheduleError.network("考试接口返回 HTTP \(response.statusCode)")
+        }
+        let text = String(data: data, encoding: .utf8) ?? ""
+        if isLoginPage(text) { throw ScheduleError.sessionExpired }
+        guard let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let items = decoded["items"] as? [[String: Any]] else {
+            throw ScheduleError.parseError
+        }
+        return items.compactMap { item in
+            let name = (item["kcmc"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !name.isEmpty else { return nil }
+            let time = (item["kssj"] as? String) ?? "时间待定"
+            let location = (item["cdmc"] as? String) ?? "地点待定"
+            let seat = (item["zwh"] as? String) ?? ""
+            let examName = (item["ksmc"] as? String) ?? ""
+            let campus = (item["xqmc"] as? String) ?? (item["cdxqmc"] as? String) ?? ""
+            return ExamItem(
+                courseName: name,
+                time: time,
+                location: location,
+                seatNumber: seat,
+                examName: examName,
+                campus: campus
+            )
+        }
+    }
+
+    /// 周次解析（build 43，专家意见）：支持 "1-5周(单),6-12周(双),15周"
+    /// 逐段独立判断单双周。输入已归一化（去 第/周，(单)→单，(双)→双）。
+    static func parseWeeks(_ raw: String) -> [Int] {
+        let segments = raw.components(separatedBy: CharacterSet(charactersIn: ",，、;；"))
+        var result = Set<Int>()
+        let numberRegex = try? NSRegularExpression(pattern: #"\d+"#)
+        for seg in segments {
+            let isOddOnly = seg.contains("单")
+            let isEvenOnly = seg.contains("双")
+            let nsRange = NSRange(seg.startIndex..<seg.endIndex, in: seg)
+            let matches = numberRegex?.matches(in: seg, range: nsRange) ?? []
+            let nums = matches.compactMap { match -> Int? in
+                guard let r = Range(match.range, in: seg) else { return nil }
+                return Int(seg[r])
+            }
+            if nums.count >= 2, nums[0] <= nums[1] {
+                for w in nums[0]...nums[1] {
+                    if isOddOnly && w % 2 == 0 { continue }
+                    if isEvenOnly && w % 2 != 0 { continue }
+                    result.insert(w)
+                }
+            } else if let single = nums.first {
+                result.insert(single)
+            }
+        }
+        return result.sorted()
     }
 
     /// 解析 kbList：kcmc 课程名、xm 老师、cdmc 地点、xqj 星期（1-7）、
@@ -437,30 +610,46 @@ enum GXVNUService {
             let weekdayString = (item["xqj"] as? String) ?? (item["xq"] as? String) ?? "\(item["xqj"] as? Int ?? 0)"
             guard let weekday = Int(weekdayString), (1...7).contains(weekday) else { continue }
             // 节次：jcor 是区间串 "1-3"；jc 是 "1-3节"。
-            var startSection = 0
-            var endSection = 0
-            let jcor = (item["jcor"] as? String) ?? ""
-            if jcor.contains("-") {
-                let parts = jcor.split(separator: "-")
-                startSection = Int(parts[0]) ?? 0
-                endSection = parts.count > 1 ? (Int(parts[1]) ?? 0) : 0
-            } else {
-                startSection = Int(jcor) ?? 0
-                endSection = startSection
+            // 同天同课多时段：jcor 可能是 "1-2,5-6"，按逗号拆成多段，
+            // 每段生成一条 Course（build 43：旧代码只取首尾会变成 1-6 节）。
+            let jcorRaw = (item["jcor"] as? String) ?? ""
+            var sectionRanges: [(Int, Int)] = []
+            for seg in jcorRaw.components(separatedBy: CharacterSet(charactersIn: ",，、;；")) {
+                let seg = seg.trimmingCharacters(in: .whitespaces)
+                guard !seg.isEmpty else { continue }
+                if seg.contains("-") {
+                    let parts = seg.split(separator: "-")
+                    if let s = Int(parts[0].trimmingCharacters(in: .whitespaces)),
+                       parts.count > 1,
+                       let e = Int(parts[1].trimmingCharacters(in: .whitespaces)) {
+                        sectionRanges.append((s, e))
+                    }
+                } else if let single = Int(seg) {
+                    sectionRanges.append((single, single))
+                }
             }
-            if startSection == 0 || endSection == 0 {
+            if sectionRanges.isEmpty {
+                // fallback：jc 字段。
                 let jc = ((item["jc"] as? String) ?? "").replacingOccurrences(of: "节", with: "")
                 if jc.contains("-") {
                     let parts = jc.split(separator: "-")
-                    startSection = Int(parts[0]) ?? 0
-                    endSection = parts.count > 1 ? (Int(parts[1]) ?? 0) : 0
+                    if let s = Int(parts[0].trimmingCharacters(in: .whitespaces)),
+                       parts.count > 1,
+                       let e = Int(parts[1].trimmingCharacters(in: .whitespaces)) {
+                        sectionRanges.append((s, e))
+                    }
                 } else if jc.count >= 4 {
-                    startSection = Int(jc.prefix(2)) ?? 0
-                    endSection = Int(jc.suffix(2)) ?? 0
+                    if let s = Int(jc.prefix(2)), let e = Int(jc.suffix(2)) {
+                        sectionRanges.append((s, e))
+                    }
+                } else if let single = Int(jc) {
+                    sectionRanges.append((single, single))
                 }
             }
-            guard startSection >= 1, endSection >= startSection else { continue }
+            guard !sectionRanges.isEmpty else { continue }
             // 周次：zcd 带 "第/周/(单)/(双)"，先归一化再解析。
+            // 多段混排单双周（"1-5周(单),6-12周(双),15周"）必须按逗号拆段、
+            // 每段独立判断单/双（build 43，专家意见）。
             let zcdRaw = (item["zcd"] as? String) ?? ""
             guard !zcdRaw.isEmpty else { continue }
             let zcd = zcdRaw
@@ -468,20 +657,22 @@ enum GXVNUService {
                 .replacingOccurrences(of: "周", with: "")
                 .replacingOccurrences(of: "(单)", with: "单")
                 .replacingOccurrences(of: "(双)", with: "双")
-            let parsed = parseWeekList(zcd)
-            let weeks = expandWeeks(parsed, rawInterval: zcd)
+            let weeks = parseWeeks(zcd)
             guard !weeks.isEmpty else { continue }
             let extra = (item["jxbmc"] as? String) ?? ""
-            courses.append(Course(
-                name: name,
-                teacher: teacher,
-                location: location,
-                weekday: weekday,
-                startSection: startSection,
-                endSection: endSection,
-                weeks: weeks,
-                extra: extra
-            ))
+            for (startSection, endSection) in sectionRanges {
+                guard startSection >= 1, endSection >= startSection else { continue }
+                courses.append(Course(
+                    name: name,
+                    teacher: teacher,
+                    location: location,
+                    weekday: weekday,
+                    startSection: startSection,
+                    endSection: endSection,
+                    weeks: weeks,
+                    extra: extra
+                ))
+            }
         }
         return courses
     }
