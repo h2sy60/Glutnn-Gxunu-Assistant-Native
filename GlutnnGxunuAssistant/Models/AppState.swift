@@ -996,6 +996,12 @@ final class AppState {
             let list: [Course]
             if school.id == .gut {
                 list = try await GUTService.fetchSchedule(year: year, semester: semester)
+                // 桂工课表不带姓名；名字空时按旧项目 getStudentName 单独取一次
+                // （旧项目登录后就调 getStudentName；这里拉课表时补取，登录后和
+                // 启动静默登录都会走到，取到就进缓存，下次不再多发一次请求）。
+                if studentName.isEmpty, let name = await GUTService.fetchStudentName(), !name.isEmpty {
+                    studentName = name
+                }
             } else {
                 list = try await GXVNUService.fetchSchedule(year: year, semester: semester)
                 // 课表响应里顺带取到的姓名（xsxx.XM）。
