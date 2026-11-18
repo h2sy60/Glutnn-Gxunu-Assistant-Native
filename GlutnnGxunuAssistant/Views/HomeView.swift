@@ -1,14 +1,15 @@
 import SwiftUI
 
 /// 首页（Flutter 版布局）：壁纸上的纯白文字 + 玻璃只做功能层。
-/// 问候 + 日期/学期 + 下节课胶囊（两行）+ 操作胶囊（一行：刷新/成绩/考试/更多，
-/// 更多仅职师院）+ 今天/明天课程（按节展开，每节一行，带状态）。
+/// 问候 + 日期/学期 + 下节课胶囊（两行）+ 操作胶囊（一行：刷新/成绩/考试/更多）
+/// + 今天/明天课程（按节展开，每节一行，带状态）。
 struct HomeView: View {
     @Environment(AppState.self) private var appState
     @Binding var selectedTab: Int
     @State private var showExams = false
     @State private var showScores = false
-    /// 更多功能（职师院专属）：待办、评教、学分、教学计划、个人信息、学籍预警。
+    /// 更多功能（build 58 两校都有）：职师院待办/评教/学分/教学计划/个人信息/学籍预警；
+    /// 桂工教学计划/空教室查询。
     @State private var showMore = false
     /// 刷新防刷计数（原版 home.dart refresh() 同款）：点 7 下“你太快了!”，
     /// 8 下以上“你慢一点!”+ 5 秒冷却。
@@ -403,8 +404,8 @@ struct HomeView: View {
                     }
 
                     // 操作胶囊（一行，居中；未登录时点它们弹登录页，登录后才做事）。
-                    // 刷新 / 成绩 / 考试三项两校都有；更多（待办、评教、学分、
-                    // 教学计划、个人信息、学籍预警）是职师院专属，桂工没有对应接口，不显示。
+                    // 刷新 / 成绩 / 考试三项两校都有；更多两校都有——职师院是
+                    // 待办/评教/学分/教学计划/个人信息/学籍预警等，桂工是教学计划/空教室查询。
                     HStack(spacing: 8) {
                         actionChip(icon: "arrow.clockwise", label: "刷新") {
                             Task { await refreshWithFeedback() }
@@ -423,13 +424,11 @@ struct HomeView: View {
                                 showExams = true
                             }
                         }
-                        if appState.school.id == .gxvnu {
-                            actionChip(icon: "ellipsis.circle.fill", label: "更多") {
-                                if !appState.isLoggedIn {
-                                    appState.showLoginSheet = true
-                                } else {
-                                    showMore = true
-                                }
+                        actionChip(icon: "ellipsis.circle.fill", label: "更多") {
+                            if !appState.isLoggedIn {
+                                appState.showLoginSheet = true
+                            } else {
+                                showMore = true
                             }
                         }
                     }
@@ -515,7 +514,12 @@ struct HomeView: View {
                 ScoreView()
             }
             .navigationDestination(isPresented: $showMore) {
-                GXVNUMoreView()
+                // build 58：更多按学校分流——桂工 GUTMoreView，职师院 GXVNUMoreView。
+                if appState.school.id == .gut {
+                    GUTMoreView()
+                } else {
+                    GXVNUMoreView()
+                }
             }
         }
     }

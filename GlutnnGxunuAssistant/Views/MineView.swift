@@ -180,11 +180,12 @@ struct ScoreView: View {
         return Array(startYear...currentYear)
     }
 
-    /// 学期码：职师院第一学期 3、第二学期 12；桂工 1、2（暂定）。
+    /// 学期码：职师院第一学期 3、第二学期 12；
+    /// 桂工秋 3、春 1（build 58 按旧项目：秋=3、春=1；之前暂定的 1、2 是错的）。
     private var termCode: String? {
         guard selectedTermIndex != 0 else { return nil }
         if appState.school.id == .gut {
-            return selectedTermIndex == 1 ? "1" : "2"
+            return selectedTermIndex == 1 ? "3" : "1"
         }
         return selectedTermIndex == 1 ? "3" : "12"
     }
@@ -362,8 +363,19 @@ struct ExamsView: View {
                 List($exams, id: \.id) { $exam in
                     let e = $exam.wrappedValue
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(e.courseName)
-                            .font(.headline)
+                        HStack(spacing: 6) {
+                            Text(e.courseName)
+                                .font(.headline)
+                            // build 58：旧项目按结束时间算已考/待考，已考的打个标记。
+                            if e.isPast {
+                                Text("已考")
+                                    .font(.caption)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color.secondary.opacity(0.15), in: Capsule())
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                         if !e.examName.isEmpty {
                             Text(e.examName)
                                 .font(.subheadline)
@@ -635,6 +647,283 @@ struct GXVNUMoreView: View {
             }
         }
         .padding(.vertical, 2)
+    }
+}
+
+// MARK: - 桂工更多（build 58，按旧项目 Mine 页：教学计划 + 教室查询）
+
+/// 桂工“更多”：教学计划、空教室查询（旧项目 Mine 页就这两项）。
+struct GUTMoreView: View {
+    var body: some View {
+        ZStack {
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
+            List {
+                Section("查询") {
+                    NavigationLink(destination: GUTTeachingPlanView()) {
+                        gutMoreRowContent(icon: "book.fill", title: "教学计划", subtitle: "按学期分的全部课程")
+                    }
+                    NavigationLink(destination: GUTClassroomQueryView()) {
+                        gutMoreRowContent(icon: "building.2.fill", title: "空教室查询", subtitle: "按教学楼、周次、星期查空教室")
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
+        }
+        .navigationTitle("更多")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func gutMoreRowContent(icon: String, title: String, subtitle: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .foregroundStyle(.secondary)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                Text(subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+// MARK: - 桂工教学计划（build 58，按旧项目 teachingPlanPage）
+
+struct GUTTeachingPlanView: View {
+    @State private var plan: GUTTeachingPlan?
+    @State private var isLoading = false
+    @State private var errorMessage: String? = nil
+
+    var body: some View {
+        ZStack {
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
+            if isLoading && plan == nil {
+                ProgressView("正在拉取教学计划…")
+            } else if let errorMessage, plan == nil {
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                    Text(errorMessage)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Button("重新拉取") { Task { await load() } }
+                }
+            } else if let plan {
+                List {
+                    Section("基本信息") {
+                        LabeledContent("院系", value: plan.department.isEmpty ? "—" : plan.department)
+                        LabeledContent("专业", value: plan.major.isEmpty ? "—" : plan.major)
+                        LabeledContent("年级", value: plan.grade == 0 ? "—" : "\(plan.grade)级")
+                        LabeledContent("层次", value: plan.educationalLevel.isEmpty ? "—" : plan.educationalLevel)
+                        LabeledContent("学制", value: "\(plan.schoolingLength)年")
+                        LabeledContent("课程总数", value: "\(plan.totalCourseCount)门")
+                        LabeledContent("考试课", value: "\(plan.totalExamCount)门")
+                        LabeledContent("专业课", value: "\(plan.totalMajorCourseCount)门")
+                        LabeledContent("已通过", value: "\(plan.passCount)门")
+                        LabeledContent("未通过", value: "\(plan.failCount)门")
+                    }
+                    ForEach(Array(plan.semesters.enumerated()), id: \.offset) { index, courses in
+                        // 旧项目按秋/春分：单数学期是秋，双数学期是春。
+                        Section("第\(index + 1)学期 · \(index % 2 == 0 ? "秋" : "春")") {
+                            ForEach(courses) { course in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(course.name)
+                                        .font(.headline)
+                                    HStack(spacing: 8) {
+                                        Text(course.code)
+                                        Text(course.assessmentType)
+                                        Text("\(course.credit)学分")
+                                        Text("\(course.hours)学时")
+                                        Text(course.category)
+                                    }
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                }
+                                .padding(.vertical, 2)
+                            }
+                        }
+                    }
+                }
+                .listStyle(.insetGrouped)
+            } else {
+                VStack(spacing: 12) {
+                    Image(systemName: "book")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                    Text("暂无教学计划")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .navigationTitle("教学计划")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await load() }
+    }
+
+    private func load() async {
+        guard !isLoading else { return }
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            plan = try await GUTService.fetchTeachingPlan()
+            errorMessage = nil
+        } catch let error as ScheduleError {
+            errorMessage = error == .sessionExpired ? "登录已过期，请重新登录" : error.errorDescription
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? "拉取教学计划失败"
+        }
+    }
+}
+
+// MARK: - 桂工空教室查询（build 58，按旧项目 classroomQueryPage）
+
+struct GUTClassroomQueryView: View {
+    @Environment(AppState.self) private var appState
+
+    @State private var buildings: [GUTClassroomBuilding] = []
+    @State private var selectedBuildingId: String = "-1"
+    @State private var selectedWeek: Int = 1
+    @State private var selectedDay: Int = 1
+    @State private var rooms: [GUTClassroom] = []
+    @State private var isLoadingOptions = false
+    @State private var isQuerying = false
+    @State private var errorMessage: String? = nil
+    @State private var hasQueried = false
+
+    private var weekOptions: [Int] { Array(1...20) }
+    private var dayNames: [String] { ["周一", "周二", "周三", "周四", "周五", "周六", "周日"] }
+
+    var body: some View {
+        ZStack {
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
+            List {
+                Section("查询条件") {
+                    Picker("教学楼", selection: $selectedBuildingId) {
+                        Text("请选择").tag("-1")
+                        ForEach(buildings) { b in
+                            Text(b.name).tag(b.buildingId)
+                        }
+                    }
+                    Picker("周次", selection: $selectedWeek) {
+                        ForEach(weekOptions, id: \.self) { w in
+                            Text("第\(w)周").tag(w)
+                        }
+                    }
+                    Picker("星期", selection: $selectedDay) {
+                        ForEach(1...7, id: \.self) { d in
+                            Text(dayNames[d - 1]).tag(d)
+                        }
+                    }
+                    Button("即刻查询") {
+                        Task { await query() }
+                    }
+                    .disabled(selectedBuildingId == "-1" || isQuerying)
+                }
+                if isQuerying && rooms.isEmpty {
+                    Section {
+                        HStack { Spacer(); ProgressView("查询中…"); Spacer() }
+                    }
+                } else if let errorMessage, rooms.isEmpty, hasQueried {
+                    Section {
+                        Text(errorMessage)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                } else if hasQueried && rooms.isEmpty {
+                    Section {
+                        Text("该教学楼本周没有空教室")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                } else if !rooms.isEmpty {
+                    Section("空教室（\(rooms.count)间）") {
+                        ForEach(rooms) { room in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text(room.roomNumber)
+                                        .font(.headline)
+                                    Text(room.type)
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                    Spacer()
+                                    if room.isAllDayFree {
+                                        Text("全天空闲")
+                                            .font(.subheadline)
+                                            .foregroundStyle(.green)
+                                    }
+                                }
+                                Text("座位 \(room.seatCount) · 考试座位 \(room.examSeatCount)")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                if !room.isAllDayFree {
+                                    Text(freeSectionsText(room.occupancy))
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .padding(.vertical, 2)
+                        }
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
+        }
+        .navigationTitle("空教室查询")
+        .navigationBarTitleDisplayMode(.inline)
+        .task {
+            // 默认本周、本星期（旧项目：周次取当前周，星期取今天）。
+            selectedWeek = appState.currentWeek
+            let swiftWeekday = Calendar.current.component(.weekday, from: Date())
+            selectedDay = swiftWeekday == 1 ? 7 : swiftWeekday - 1
+            await loadBuildings()
+        }
+    }
+
+    /// 空闲节次文案（旧项目 promptMessage：全天空闲 / 第 X 节有课 / 全天满课）。
+    private func freeSectionsText(_ occupancy: [Bool]) -> String {
+        let busy = occupancy.enumerated().filter { !$0.element }.map { $0.offset + 1 }
+        if busy.isEmpty { return "全天空闲" }
+        if busy.count == occupancy.count { return "全天满课" }
+        return "有课：第 " + busy.map(String.init).joined(separator: "、") + " 节"
+    }
+
+    private func loadBuildings() async {
+        guard !isLoadingOptions else { return }
+        isLoadingOptions = true
+        defer { isLoadingOptions = false }
+        do {
+            buildings = try await GUTService.fetchClassroomBuildings()
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? "拉取教学楼失败"
+        }
+    }
+
+    private func query() async {
+        guard selectedBuildingId != "-1", !isQuerying else { return }
+        isQuerying = true
+        hasQueried = true
+        errorMessage = nil
+        defer { isQuerying = false }
+        do {
+            rooms = try await GUTService.fetchFreeClassrooms(
+                building: selectedBuildingId,
+                week: String(selectedWeek),
+                dayOfWeek: String(selectedDay)
+            )
+        } catch let error as ScheduleError {
+            errorMessage = error == .sessionExpired ? "登录已过期，请重新登录" : error.errorDescription
+            rooms = []
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? "查询失败"
+            rooms = []
+        }
     }
 }
 
