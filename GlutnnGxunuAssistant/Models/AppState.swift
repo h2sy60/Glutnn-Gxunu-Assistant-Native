@@ -242,6 +242,42 @@ struct ScheduleAppearance: Codable, Equatable {
     /// 格子底色不透明度（0.3...1.0）。默认 1.0。
     var blockOpacity: Double
 
+    // MARK: 课程格子（build 57，参考 WakeUp「课表外观」）
+    /// 格子边框颜色（hex）。默认浅灰 #D9D9D9，格子始终画 1pt 边框。
+    var borderColorHex: String
+    /// 格子使用虚线边框。默认 false。
+    var useDashedBorder: Bool
+    /// 边框使用格子颜色（忽略边框颜色）。默认 false。
+    var borderUsesBlockColor: Bool
+    /// 课程文字颜色叠加格子颜色（文字色与格子色 50% 混合）。默认 false。
+    var textOverlaysBlockColor: Bool
+    /// 格子文字水平居中。默认 true（当前就是居中）。
+    var textHorizontalCenter: Bool
+    /// 格子文字垂直居中。默认 false（当前是顶部排布）。
+    var textVerticalCenter: Bool
+    /// 自定义格子高度（行高，40...120），nil = 自动按屏幕算。默认 nil。
+    var customRowHeight: Double?
+    /// 非本周课程不透明比（0.1...1.0）。默认 0.5。
+    var nonCurrentWeekOpacity: Double
+    /// 显示非本周课程（只显示不与本周课冲突的时段，淡色）。默认 false。
+    var showNonCurrentWeekCourses: Bool
+
+    // MARK: 整体界面（build 57）
+    /// 使用纯色背景（否则白底）。默认 false。
+    var useSolidBackground: Bool
+    /// 背景颜色（hex）。默认白色 #FFFFFF。
+    var backgroundColorHex: String
+    /// 表头颜色（hex，顶栏标题 + 星期条文字）。默认黑色 #000000。
+    var headerColorHex: String
+    /// 显示网格辅助线（虚线网格）。默认 true。
+    var showGridGuides: Bool
+    /// 节数栏显示时间。默认 true。
+    var showSectionTime: Bool
+    /// 显示周六。默认 true。
+    var showSaturday: Bool
+    /// 显示周日。默认 true。
+    var showSunday: Bool
+
     static let `default` = ScheduleAppearance(
         textColorHex: "#000000",
         textOpacity: 0.75,
@@ -252,7 +288,23 @@ struct ScheduleAppearance: Codable, Equatable {
         showTeacher: true,
         showExtra: false,
         cornerRadius: 10,
-        blockOpacity: 1.0
+        blockOpacity: 1.0,
+        borderColorHex: "#D9D9D9",
+        useDashedBorder: false,
+        borderUsesBlockColor: false,
+        textOverlaysBlockColor: false,
+        textHorizontalCenter: true,
+        textVerticalCenter: false,
+        customRowHeight: nil,
+        nonCurrentWeekOpacity: 0.5,
+        showNonCurrentWeekCourses: false,
+        useSolidBackground: false,
+        backgroundColorHex: "#FFFFFF",
+        headerColorHex: "#000000",
+        showGridGuides: true,
+        showSectionTime: true,
+        showSaturday: true,
+        showSunday: true
     )
 
     /// 块内文字颜色（文字色 × 不透明度）。
@@ -260,9 +312,76 @@ struct ScheduleAppearance: Codable, Equatable {
         Color(hex: textColorHex).opacity(textOpacity)
     }
 
+    /// 格子边框颜色。
+    var borderColor: Color { Color(hex: borderColorHex) }
+    /// 课表背景颜色（用纯色背景时才用）。
+    var backgroundColor: Color { Color(hex: backgroundColorHex) }
+    /// 表头颜色。
+    var headerColor: Color { Color(hex: headerColorHex) }
+    /// 实际背景色（不用纯色背景时就是白底）。
+    var effectiveBackgroundColor: Color { useSolidBackground ? backgroundColor : .white }
+
     /// 从 ColorPicker 的 Color 回写 hex（只取 RGB，不含透明度）。
     mutating func setTextColor(_ color: Color) {
         if let hex = color.toHex() { textColorHex = hex }
+    }
+    mutating func setBorderColor(_ color: Color) {
+        if let hex = color.toHex() { borderColorHex = hex }
+    }
+    mutating func setBackgroundColor(_ color: Color) {
+        if let hex = color.toHex() { backgroundColorHex = hex }
+    }
+    mutating func setHeaderColor(_ color: Color) {
+        if let hex = color.toHex() { headerColorHex = hex }
+    }
+}
+
+// MARK: - ScheduleAppearance 向后兼容解码（build 57）
+//
+// build 48 只存 10 个字段；build 57 加了 16 个。新字段用 decodeIfPresent，
+// 旧数据缺了就取默认值，已存的设置不会丢，也不会解码失败。
+// 注意：init(from:) 写在 extension 里，memberwise init 才不会被吃掉
+// （static let default 靠它构造；已用 swiftc 实测验证）。
+extension ScheduleAppearance {
+    private enum CodingKeys: String, CodingKey {
+        case textColorHex, textOpacity, fontSize, showStartTime, showLocation
+        case showAtSign, showTeacher, showExtra, cornerRadius, blockOpacity
+        case borderColorHex, useDashedBorder, borderUsesBlockColor, textOverlaysBlockColor
+        case textHorizontalCenter, textVerticalCenter, customRowHeight
+        case nonCurrentWeekOpacity, showNonCurrentWeekCourses
+        case useSolidBackground, backgroundColorHex, headerColorHex
+        case showGridGuides, showSectionTime, showSaturday, showSunday
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = Self.default
+        textColorHex = try c.decodeIfPresent(String.self, forKey: .textColorHex) ?? d.textColorHex
+        textOpacity = try c.decodeIfPresent(Double.self, forKey: .textOpacity) ?? d.textOpacity
+        fontSize = try c.decodeIfPresent(Double.self, forKey: .fontSize) ?? d.fontSize
+        showStartTime = try c.decodeIfPresent(Bool.self, forKey: .showStartTime) ?? d.showStartTime
+        showLocation = try c.decodeIfPresent(Bool.self, forKey: .showLocation) ?? d.showLocation
+        showAtSign = try c.decodeIfPresent(Bool.self, forKey: .showAtSign) ?? d.showAtSign
+        showTeacher = try c.decodeIfPresent(Bool.self, forKey: .showTeacher) ?? d.showTeacher
+        showExtra = try c.decodeIfPresent(Bool.self, forKey: .showExtra) ?? d.showExtra
+        cornerRadius = try c.decodeIfPresent(Double.self, forKey: .cornerRadius) ?? d.cornerRadius
+        blockOpacity = try c.decodeIfPresent(Double.self, forKey: .blockOpacity) ?? d.blockOpacity
+        borderColorHex = try c.decodeIfPresent(String.self, forKey: .borderColorHex) ?? d.borderColorHex
+        useDashedBorder = try c.decodeIfPresent(Bool.self, forKey: .useDashedBorder) ?? d.useDashedBorder
+        borderUsesBlockColor = try c.decodeIfPresent(Bool.self, forKey: .borderUsesBlockColor) ?? d.borderUsesBlockColor
+        textOverlaysBlockColor = try c.decodeIfPresent(Bool.self, forKey: .textOverlaysBlockColor) ?? d.textOverlaysBlockColor
+        textHorizontalCenter = try c.decodeIfPresent(Bool.self, forKey: .textHorizontalCenter) ?? d.textHorizontalCenter
+        textVerticalCenter = try c.decodeIfPresent(Bool.self, forKey: .textVerticalCenter) ?? d.textVerticalCenter
+        customRowHeight = try c.decodeIfPresent(Double.self, forKey: .customRowHeight)
+        nonCurrentWeekOpacity = try c.decodeIfPresent(Double.self, forKey: .nonCurrentWeekOpacity) ?? d.nonCurrentWeekOpacity
+        showNonCurrentWeekCourses = try c.decodeIfPresent(Bool.self, forKey: .showNonCurrentWeekCourses) ?? d.showNonCurrentWeekCourses
+        useSolidBackground = try c.decodeIfPresent(Bool.self, forKey: .useSolidBackground) ?? d.useSolidBackground
+        backgroundColorHex = try c.decodeIfPresent(String.self, forKey: .backgroundColorHex) ?? d.backgroundColorHex
+        headerColorHex = try c.decodeIfPresent(String.self, forKey: .headerColorHex) ?? d.headerColorHex
+        showGridGuides = try c.decodeIfPresent(Bool.self, forKey: .showGridGuides) ?? d.showGridGuides
+        showSectionTime = try c.decodeIfPresent(Bool.self, forKey: .showSectionTime) ?? d.showSectionTime
+        showSaturday = try c.decodeIfPresent(Bool.self, forKey: .showSaturday) ?? d.showSaturday
+        showSunday = try c.decodeIfPresent(Bool.self, forKey: .showSunday) ?? d.showSunday
     }
 }
 
