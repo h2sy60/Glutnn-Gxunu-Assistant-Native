@@ -53,6 +53,14 @@ struct SchoolConfig: Equatable {
         return endTimeList
     }
 
+    /// 生效的开学日期：学期设置里改过就用改过的，否则用学校默认开学日。
+    var effectiveTermStartDate: Date {
+        AppSettings.termStartDateOverride(for: id) ?? termStartDate
+    }
+
+    /// 生效的学期总周数（学期设置，默认 20）。
+    var effectiveTotalWeeks: Int { AppSettings.totalWeeks(for: id) }
+
     static func == (lhs: SchoolConfig, rhs: SchoolConfig) -> Bool {
         lhs.id == rhs.id
     }
@@ -136,6 +144,106 @@ struct CustomSectionTimes: Codable {
 
     static func reset(for schoolId: SchoolID) {
         UserDefaults.standard.removeObject(forKey: key(for: schoolId))
+    }
+}
+
+// MARK: - 应用设置（build 63：提醒/首页/通用/学期/日历同步等，全部 UserDefaults）
+
+/// 全部设置的统一读写（按学校分的加 schoolId 后缀）。默认一律关/默认项，
+/// 不改任何现有行为，开了才生效。
+enum AppSettings {
+    private static let defaults = UserDefaults.standard
+
+    // MARK: 学期设置（按学校）
+    /// 开学日期覆盖（存时间戳；没存过返回 nil，用学校默认开学日）。
+    static func termStartDateOverride(for schoolId: SchoolID) -> Date? {
+        let t = defaults.double(forKey: "TermStartDateOverride.\(schoolId.rawValue)")
+        guard t > 0 else { return nil }
+        return Date(timeIntervalSince1970: t)
+    }
+    static func setTermStartDateOverride(_ date: Date?, for schoolId: SchoolID) {
+        if let date {
+            defaults.set(date.timeIntervalSince1970, forKey: "TermStartDateOverride.\(schoolId.rawValue)")
+        } else {
+            defaults.removeObject(forKey: "TermStartDateOverride.\(schoolId.rawValue)")
+        }
+    }
+    /// 学期总周数（默认 20）。
+    static func totalWeeks(for schoolId: SchoolID) -> Int {
+        let v = defaults.integer(forKey: "TotalWeeks.\(schoolId.rawValue)")
+        return v > 0 ? v : 20
+    }
+    static func setTotalWeeks(_ weeks: Int, for schoolId: SchoolID) {
+        defaults.set(weeks, forKey: "TotalWeeks.\(schoolId.rawValue)")
+    }
+
+    // MARK: 日历同步
+    /// 课表刷新后自动同步到系统日历（默认关）。
+    static var autoCalendarSync: Bool {
+        get { defaults.bool(forKey: "AutoCalendarSync") }
+        set { defaults.set(newValue, forKey: "AutoCalendarSync") }
+    }
+    /// 同步范围：0=本学期（全部周），1=本周起（只同步当前周及以后）。
+    static var calendarSyncRange: Int {
+        get { defaults.integer(forKey: "CalendarSyncRange") }
+        set { defaults.set(newValue, forKey: "CalendarSyncRange") }
+    }
+
+    // MARK: 提醒设置
+    /// 上课提醒（默认关）。
+    static var classReminderEnabled: Bool {
+        get { defaults.bool(forKey: "ClassReminderEnabled") }
+        set { defaults.set(newValue, forKey: "ClassReminderEnabled") }
+    }
+    /// 上课提前提醒分钟数（默认 10）。
+    static var classReminderMinutes: Int {
+        get { let v = defaults.integer(forKey: "ClassReminderMinutes"); return v > 0 ? v : 10 }
+        set { defaults.set(newValue, forKey: "ClassReminderMinutes") }
+    }
+    /// 考试提醒（默认关）。
+    static var examReminderEnabled: Bool {
+        get { defaults.bool(forKey: "ExamReminderEnabled") }
+        set { defaults.set(newValue, forKey: "ExamReminderEnabled") }
+    }
+    /// 考试提前提醒天数（默认 1）。
+    static var examReminderDays: Int {
+        get { let v = defaults.integer(forKey: "ExamReminderDays"); return v > 0 ? v : 1 }
+        set { defaults.set(newValue, forKey: "ExamReminderDays") }
+    }
+
+    // MARK: 首页设置
+    /// 首页显示近期考试条（默认开）。
+    static var showRecentExams: Bool {
+        get { defaults.object(forKey: "ShowRecentExams") == nil ? true : defaults.bool(forKey: "ShowRecentExams") }
+        set { defaults.set(newValue, forKey: "ShowRecentExams") }
+    }
+    /// 首页显示明日课程（默认开）。
+    static var showTomorrowCourses: Bool {
+        get { defaults.object(forKey: "ShowTomorrowCourses") == nil ? true : defaults.bool(forKey: "ShowTomorrowCourses") }
+        set { defaults.set(newValue, forKey: "ShowTomorrowCourses") }
+    }
+    /// 首页显示问候语（默认开）。
+    static var showGreeting: Bool {
+        get { defaults.object(forKey: "ShowGreeting") == nil ? true : defaults.bool(forKey: "ShowGreeting") }
+        set { defaults.set(newValue, forKey: "ShowGreeting") }
+    }
+    /// 首页壁纸：0=默认（校园黄昏照片），1=深蓝渐变，2=墨绿渐变，3=纯黑。
+    static var wallpaper: Int {
+        get { defaults.integer(forKey: "Wallpaper") }
+        set { defaults.set(newValue, forKey: "Wallpaper") }
+    }
+
+    // MARK: 通用设置
+    /// 启动时自动刷新课表（默认关；Russell 2026-11-18 定手动刷新为主，
+    /// 这个开关默认关，不改现有行为）。
+    static var autoRefreshOnLaunch: Bool {
+        get { defaults.bool(forKey: "AutoRefreshOnLaunch") }
+        set { defaults.set(newValue, forKey: "AutoRefreshOnLaunch") }
+    }
+    /// 成绩每行显示：0=原始成绩，1=绩点，2=数字分（默认 0）。
+    static var scoreDisplayMode: Int {
+        get { defaults.integer(forKey: "ScoreDisplayMode") }
+        set { defaults.set(newValue, forKey: "ScoreDisplayMode") }
     }
 }
 
@@ -259,15 +367,17 @@ func expandWeeks(_ parsed: (weeks: [Int], special: Bool), rawInterval: String) -
 
 // MARK: - 当前周
 
-/// 从学期开始日往后数，当前是第几周（1 起，超 20 周按 20 算）。
+/// 从学期开始日往后数，当前是第几周（1 起，超总周数按总周数算）。
+/// 开学日和总周数都走生效值（学期设置里可改）。
 func currentWeek(for school: SchoolConfig, on date: Date = Date()) -> Int {
     let cal = Calendar(identifier: .gregorian)
-    let start = cal.startOfDay(for: school.termStartDate)
+    let start = cal.startOfDay(for: school.effectiveTermStartDate)
     let today = cal.startOfDay(for: date)
     let days = cal.dateComponents([.day], from: start, to: today).day ?? 0
     var week = days / 7 + 1
     if week < 1 { week = 1 }
-    if week > 20 { week = 20 }
+    let total = school.effectiveTotalWeeks
+    if week > total { week = total }
     return week
 }
 
@@ -405,6 +515,18 @@ func averageScore(_ scores: [CourseScore]) -> Double {
     guard !counted.isEmpty else { return 0 }
     let total = counted.reduce(0.0) { $0 + $1.score }
     return (total / Double(counted.count) * 100).rounded() / 100
+}
+
+/// 成绩每行显示的文字（build 63 通用设置：0=原始成绩，1=绩点，2=数字分）。
+func scoreRowText(_ s: CourseScore) -> String {
+    switch AppSettings.scoreDisplayMode {
+    case 1:
+        return String(format: "%.2f", s.gradePoint)
+    case 2:
+        return String(format: "%.1f", s.score)
+    default:
+        return s.rawScore
+    }
 }
 
 
