@@ -6,27 +6,31 @@ import SwiftUI
 //      “2026-11-18📍”玻璃药丸；点标题或日期都回到当前周。没有左右箭头，没有日期范围。
 // 周 strip：只有星期字（一 二 三 四 五 六 日），当天是黑色圆角 pill；
 //      showDayByWeekDay 默认 false，所以不显示日期数字。
-// 网格区：顶栏 + strip 固定在上；下面是一个普通纵向 ScrollView 填满剩余空间，
-//      装 11 节网格（下滑看 10-11 节）。左右横滑切周（DragGesture），
-//      点标题/日期回到当前周。
+// 网格：白底 + 虚线网格 + 淡彩色块；左栏是节号 + 开始 + 结束时间；
+//      块内是开始时间 + 全名（换行）+ 占两节以上再显示老师 + @教室（最多 3 行）。
 //      行高按屏幕高度算：（屏幕高 − 180 − 85）/ 除数，夹在 50–92；
 //      桂工除数 8.2（首屏 9 节）、职师院 9.2（首屏 10 节）。
-// 下坠教训（build 21–26 全部栽在这，build 26 已证实）：
-//      只要 ScheduleView 里有 GeometryReader，下坠就在——不管它放 TabView 页面里
-//      还是放外面、不管 TabView 在不在（build 26 已把 TabView 删了，下坠还在）。
-//      GeometryReader 在 VStack 里量的高度会把布局撑开，顶栏和星期条之间、
-//      星期条和网格之间出现大白空隙、网格掉到半屏。
-//      build 27 彻底重构：整个文件一个 GeometryReader 也不要，
-//      行高和列宽全用 UIScreen.main.bounds 直接算，
-//      网格区就是普通 VStack + ScrollView，不要再把 GeometryReader 加回来，
-//      也不要再把 TabView 加回来。
-// 下坠教训 2（build 27 也栽了，2026-11-18 10:01 Russell：“还是这样”）：
-//      零 GeometryReader、零 TabView 还是下坠——GeometryReader 也不是病根。
-//      剩下最后一个结构差别：首页和我的（显示正常）根都是 NavigationStack，
-//      课表是唯一一个裸 VStack 直接挂在 TabView 下的页。
-//      build 28：课表也包一层 NavigationStack（navigationBarHidden），
-//      和首页/我的同结构。如果这版还下坠，病根就不在课表页自身，
-//      而在 ContentView/TabView 或更高层，得做最小复现二分。
+// 切周：左右横滑；点标题/日期回到当前周。
+//
+// 下坠教训（build 21–28 全部栽在这，8 个版本）：
+//      build 21–25：GeometryReader 换位置 / TabView 加显式高度——全败。
+//      build 26：删 TabView——还下坠，TabView 不是病根。
+//      build 27：删全部 GeometryReader——还下坠，GeometryReader 也不是病根。
+//      build 28：包 NavigationStack——还下坠（Russell 10:09 亲装确认），
+//      NavigationStack 也不是病根。
+//      Russell 10:09：“我说了删了重构，天天守着你的屎山”。
+//      他说得对：21–28 全是在同一套 VStack + 固定头 + 弹性 ScrollView 结构上
+//      小修小补，从来没真正重构过。
+//      build 29 是真重构：整个文件删了重写，结构全换——
+//      根就是一个 ScrollView，里面 LazyVStack(pinnedViews: [.sectionHeaders])，
+//      顶栏 + 星期条做成粘性 section header（滑到底也钉在顶部），
+//      网格就是 section 内容。没有 VStack 包 ScrollView 的兄弟结构，
+//      没有 NavigationStack，没有 TabView，没有 GeometryReader，
+//      没有 .refreshable（课表页下拉刷新先拿掉，首页刷新芯片还在；
+//      等布局站稳了再考虑加回来）。
+//      不要再往这个文件里加回 VStack + ScrollView 兄弟结构，
+//      也不要再加 GeometryReader / TabView / NavigationStack——
+//      那 8 个版本已经证明那条路走不通。
 
 struct ScheduleView: View {
     @Environment(AppState.self) private var appState
@@ -87,9 +91,9 @@ struct ScheduleView: View {
         return min(92, max(50, (available - bottomClearance) / divisor))
     }
 
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
+    /// 粘性顶栏（顶栏 + 星期条）：滑到底也钉在顶部，白底盖住下面滑过的网格。
+    private var headerView: some View {
+        VStack(spacing: 0) {
             // 顶栏（原版 ScheduleTopBar）：左“第 X 周 周Y”，右“导出”+“日期📍”玻璃药丸。
             HStack {
                 Button {
@@ -139,62 +143,55 @@ struct ScheduleView: View {
                 .padding(.horizontal, 8)
                 .padding(.top, 4)
                 .padding(.bottom, 10)
+        }
+        .background(Color.white)
+    }
 
-            // 网格区（build 27 重构）：普通纵向 ScrollView 直接填满剩余空间，
-            // 没有 GeometryReader，没有 TabView。切周时 .id(week) 让 ScrollView 回到顶部。
-            if appState.scheduleLoading && appState.courses.isEmpty {
-                VStack {
-                    Spacer()
-                    ProgressView("正在拉取课表…")
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if weekCourses.isEmpty {
-                VStack {
-                    Spacer()
-                    VStack(spacing: 12) {
-                        Image(systemName: "calendar.badge.exclamationmark")
-                            .font(.largeTitle)
-                            .foregroundStyle(.black.opacity(0.4))
-                        Text(appState.scheduleError ?? "本周没有课程")
-                            .font(.subheadline)
-                            .foregroundStyle(.black.opacity(0.7))
-                            .multilineTextAlignment(.center)
-                        Button("重新拉取") {
-                            Task { await appState.refreshSchedule() }
+    var body: some View {
+        ScrollView(.vertical, showsIndicators: false) {
+            LazyVStack(spacing: 0, pinnedViews: [.sectionHeaders]) {
+                Section {
+                    if appState.scheduleLoading && appState.courses.isEmpty {
+                        VStack(spacing: 12) {
+                            ProgressView("正在拉取课表…")
                         }
-                        .buttonStyle(.bordered)
-                    }
-                    .padding()
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView(.vertical, showsIndicators: false) {
-                    ScheduleGrid(
-                        courses: weekCourses,
-                        school: appState.school,
-                        rowHeight: rowHeightValue
-                    )
-                    .padding(.bottom, bottomClearance)
-                }
-                .id(week)
-                .refreshable {
-                    if !appState.isLoggedIn {
-                        appState.showLoginSheet = true
+                        .frame(maxWidth: .infinity, minHeight: 300)
+                    } else if weekCourses.isEmpty {
+                        VStack(spacing: 12) {
+                            Image(systemName: "calendar.badge.exclamationmark")
+                                .font(.largeTitle)
+                                .foregroundStyle(.black.opacity(0.4))
+                            Text(appState.scheduleError ?? "本周没有课程")
+                                .font(.subheadline)
+                                .foregroundStyle(.black.opacity(0.7))
+                                .multilineTextAlignment(.center)
+                            Button("重新拉取") {
+                                Task { await appState.refreshSchedule() }
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 300)
+                        .padding()
                     } else {
-                        await appState.refreshSchedule()
+                        ScheduleGrid(
+                            courses: weekCourses,
+                            school: appState.school,
+                            rowHeight: rowHeightValue
+                        )
+                        .padding(.bottom, bottomClearance)
                     }
+                } header: {
+                    headerView
                 }
             }
-            }
-            .background(Color.white)
-            .navigationBarHidden(true)
-            .highPriorityGesture(swipeGesture)
-            .onAppear { displayWeek = appState.currentWeek }
-            .alert("导出功能即将上线", isPresented: $showExportSoon) {
-                Button("知道了", role: .cancel) {}
-            }
+        }
+        .id(week)
+        .background(Color.white)
+        .contentMargins(.top, 0, for: .scrollContent)
+        .highPriorityGesture(swipeGesture)
+        .onAppear { displayWeek = appState.currentWeek }
+        .alert("导出功能即将上线", isPresented: $showExportSoon) {
+            Button("知道了", role: .cancel) {}
         }
     }
 }
