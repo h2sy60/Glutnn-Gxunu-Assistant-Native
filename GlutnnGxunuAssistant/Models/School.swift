@@ -242,6 +242,17 @@ struct CourseScore: Identifiable {
     let courseCategory: String
 }
 
+/// 一场考试（两校共用）。
+struct ExamItem: Identifiable {
+    var id: String { "\(courseName)-\(time)-\(location)" }
+    let courseName: String
+    let time: String
+    let location: String
+    let seatNumber: String
+    let examName: String
+    let campus: String
+}
+
 /// 等级分换算成数字（与 Flutter 版 levelToNumber 一致）。
 /// 注意先换“不及格/不合格”（它们包含“及格”二字，后换会被误伤）。
 func levelToNumber(_ value: String) -> String {

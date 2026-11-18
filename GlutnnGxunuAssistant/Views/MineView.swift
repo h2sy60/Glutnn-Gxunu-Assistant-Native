@@ -247,3 +247,86 @@ struct ScoreView: View {
         }
     }
 }
+
+/// 考试安排页（build 43 新增）。与 ScoreView 同款结构：
+/// List 用 $exams（Binding），避免 Swift 6 把普通数组解析成 Binding 重载。
+struct ExamsView: View {
+    @Environment(AppState.self) private var appState
+
+    @State private var exams: [ExamItem] = []
+
+    var body: some View {
+        ZStack {
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
+
+            if appState.examsLoading && appState.exams.isEmpty {
+                ProgressView("正在拉取考试安排…")
+            } else if let error = appState.examsError, appState.exams.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                    Text(error)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Button("重新拉取") {
+                        Task { await appState.refreshExams() }
+                    }
+                }
+            } else if appState.exams.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "doc.text")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                    Text("暂无考试安排")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                List($exams, id: \.id) { $exam in
+                    let e = $exam.wrappedValue
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(e.courseName)
+                            .font(.headline)
+                        if !e.examName.isEmpty {
+                            Text(e.examName)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        Text(e.time)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        HStack(spacing: 4) {
+                            Text(e.location)
+                            if !e.seatNumber.isEmpty {
+                                Text("· 座位 \(e.seatNumber)")
+                            }
+                            if !e.campus.isEmpty {
+                                Text("· \(e.campus)")
+                            }
+                        }
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                }
+                .listStyle(.insetGrouped)
+                .refreshable {
+                    await appState.refreshExams()
+                }
+            }
+        }
+        .navigationTitle("考试")
+        .navigationBarTitleDisplayMode(.inline)
+        .task {
+            if appState.exams.isEmpty && appState.examsError == nil {
+                await appState.refreshExams()
+            }
+            exams = appState.exams
+        }
+        .onChange(of: appState.exams.count) { _, _ in
+            exams = appState.exams
+        }
+    }
+}

@@ -165,7 +165,7 @@ enum ScheduleStore {
 
 // MARK: - 登录 / 课表结果
 
-enum LoginOutcome {
+enum LoginOutcome: Equatable {
     case success
     /// 登录失败（文案可直接展示）。
     case failure(String)
@@ -173,7 +173,7 @@ enum LoginOutcome {
     case captchaRequired
 }
 
-enum ScheduleError: Error, LocalizedError {
+enum ScheduleError: Error, LocalizedError, Equatable {
     case sessionExpired
     case network(String)
     case parseError
@@ -246,6 +246,11 @@ final class AppState {
     var scores: [CourseScore] = []
     var scoresLoading = false
     var scoresError: String?
+
+    /// 考试安排（build 43 新增）。
+    var exams: [ExamItem] = []
+    var examsLoading = false
+    var examsError: String?
 
     /// 登录状态。
     var loginLoading = false
@@ -322,11 +327,17 @@ final class AppState {
     var captchaDialogText = ""
     var captchaChecking = false
 
-    /// 正在登录（全量登录 / 静默重登共用）：同一时间只登一次。
+    /// 单飞登录（Single-Flight，build 43，专家意见）：正在跑的登录任务。
+    /// 已有登录在跑时，后续 performLogin 不返回 nil（那会被当成失败、
+    /// 误报“需要验证”），而是直接等待并复用同一个登录结果。
     /// 两个登录并发会互相顶掉会话（Cookie/CSRFT 串掉），表现就是
     /// “账号密码不正确”——明明密码没错，只是两次登录把会话搞脏了。
-    /// 所有登录入口（login / 静默重登）都走这把锁。
-    private var isLoginInProgress = false
+    /// 所有登录入口（login / 静默重登）都走这个单飞合并。
+    @ObservationIgnored private var activeLoginTask: Task<LoginOutcome, Never>?
+    /// 刷新课表防重入（build 43）：正在刷新时再点刷新直接忽略。
+    @ObservationIgnored private var isRefreshingSchedule = false
+    /// 刷新成绩防重入（build 43）。
+    @ObservationIgnored private var isRefreshingScores = false
 
     init() {
         updateTermFromDate()
@@ -499,11 +510,8 @@ final class AppState {
             }
             return
         }
-        // 职师院：静默重登（串行，防并发顶掉会话）。
-        guard let outcome = await performLogin(captcha: "") else {
-            showToast(.error, "正在登录，请稍候", duration: 2)
-            return
-        }
+        // 职师院：静默重登（单飞合并，防并发顶掉会话）。
+        let outcome = await performLogin(captcha: "")
         switch outcome {
         case .success:
             isLoggedIn = true
@@ -543,11 +551,8 @@ final class AppState {
         }
         captchaChecking = true
         defer { captchaChecking = false }
-        guard let outcome = await performLogin(captcha: captchaDialogText) else {
-            // 已有登录在跑，等那次的结果，留在弹窗里。
-            showToast(.error, "正在登录，请稍候", duration: 2)
-            return
-        }
+        // 单飞合并：已有登录在跑时直接等它、复用结果，不再返回 nil。
+        let outcome = await performLogin(captcha: captchaDialogText)
         switch outcome {
         case .success:
             AppLogger.shared.log("reverify \(school.id) success")
@@ -579,52 +584,64 @@ final class AppState {
         }
     }
 
-    /// 串行登录（底层）：同一时间只调一次教务登录。返回 nil = 已有登录在跑，
-    /// 调用方别另起一次、也别当成失败（等那次登完再说）。
+    /// 单飞合并（Single-Flight）登录：若已有登录在跑，直接等待并复用
+    /// 它的结果，绝不返回 nil 误报过期（build 43，专家意见）。
     /// 两个登录并发会把会话顶掉（Cookie/CSRFT 串掉），表现就是“账号密码不正确”。
-    private func performLogin(captcha: String) async -> LoginOutcome? {
-        guard !isLoginInProgress else { return nil }
-        isLoginInProgress = true
-        defer { isLoginInProgress = false }
-        if school.id == .gut {
-            return await GUTService.login(studentId: studentId, password: password, captcha: captcha)
-        } else {
-            return await GXVNUService.login(studentId: studentId, password: password, captcha: captcha)
+    /// 账号/学校在创建 Task 前先取好，避免登录中途切学校读到错的上下文。
+    private func performLogin(captcha: String) async -> LoginOutcome {
+        if let existingTask = activeLoginTask {
+            return await existingTask.value
         }
+        let currentSchool = school
+        let currentStudentId = studentId
+        let currentPassword = password
+        let task = Task<LoginOutcome, Never> {
+            if currentSchool.id == .gut {
+                return await GUTService.login(studentId: currentStudentId, password: currentPassword, captcha: captcha)
+            } else {
+                return await GXVNUService.login(studentId: currentStudentId, password: currentPassword, captcha: captcha)
+            }
+        }
+        activeLoginTask = task
+        let outcome = await task.value
+        activeLoginTask = nil
+        return outcome
     }
 
-    /// 职师院会话过期后的重登（刷新/成绩共用）：
-    /// 空验证码登，最多试两次——正方服务器是概率性要验证码，第一次说要
-    /// 不等于真要输码，再试一次常常直接通过（Russell 2026-11-18 13:30：
-    /// 点“需要验证”又直接通过，就是第一次撞上概率验证码、第二次没要）。
+    /// 职师院会话过期后的重登（刷新/成绩共用），返回 LoginOutcome：
+    /// 空验证码登，最多试两次——正方服务器是会话级风控（Shiro+Kaptcha）：
+    /// 同一 JSESSIONID 失败 1~3 次后被打 needCaptcha 标记；clearSession()
+    /// 删掉旧 JSESSIONID 后拿全新会话，第二次常常直接通过（build 43，
+    /// 专家意见：不是“随机”，是风控状态机 + clearSession 的共同作用）。
     /// 两次都要求验证码，才直接弹验证码弹窗让他输码，不经过“需要验证”
-    /// 提示条；账号/密码错才返回 false（调用方记错误/回整页登录）。
-    /// 返回 true = 重登成功，会话已恢复。
-    private func reloginGXVNU() async -> Bool {
-        var needsCaptcha = false
+    /// 提示条；账号/密码错才返回 .failure（调用方记错误/回整页登录）。
+    private func reloginGXVNU() async -> LoginOutcome {
+        var lastOutcome: LoginOutcome = .failure("重登失败")
         for _ in 0..<2 {
-            guard let outcome = await performLogin(captcha: "") else { return false }
+            let outcome = await performLogin(captcha: "")
+            lastOutcome = outcome
             switch outcome {
             case .success:
                 isLoggedIn = true
-                return true
+                return .success
             case .captchaRequired:
-                needsCaptcha = true
+                // 清掉旧会话再试一次干净会话（全新 JSESSIONID，失败计数为 0）。
+                GXVNUService.clearSession()
                 continue
             case .failure:
-                return false
+                // 明确是密码错或网络错，不再盲目重试第二次。
+                return outcome
             }
         }
-        // 两次都要验证码：直接弹弹窗，不经过“需要验证”。
-        if needsCaptcha {
-            await fetchCaptcha()
-            if captchaImageData != nil {
-                captchaDialogText = ""
-                captchaChecking = false
-                showCaptchaDialog = true
-            }
-        }
-        return false
+        // 两次都要求验证码：立刻弹验证码框（即使图片暂未加载完也先弹窗
+        // 显示加载菊花），绝不退回“需要验证”提示条（build 43，专家意见：
+        // 旧代码 fetchCaptcha() 失败时 captchaImageData==nil，弹窗不执行，
+        // 是三号漏网路径）。
+        captchaDialogText = ""
+        captchaChecking = false
+        showCaptchaDialog = true
+        await fetchCaptcha()
+        return .captchaRequired
     }
 
     /// 登录。成功后自动拉课表。
@@ -650,10 +667,8 @@ final class AppState {
         defer { loginLoading = false }
 
         let captcha = showCaptcha ? captchaText : ""
-        guard let outcome = await performLogin(captcha: captcha) else {
-            // 已有登录在跑，等那次的结果（它成功后 isLoggedIn 变 true，登录页自己关）。
-            return
-        }
+        // 单飞合并：已有登录在跑时直接等它、复用结果。
+        let outcome = await performLogin(captcha: captcha)
 
         switch outcome {
         case .success:
@@ -734,9 +749,15 @@ final class AppState {
     /// 拉课表。会话过期时自动重登一次再试。
     func refreshSchedule() async {
         guard isLoggedIn else { return }
+        // 防重入（build 43）：正在刷新时再点刷新直接忽略。
+        guard !isRefreshingSchedule else { return }
+        isRefreshingSchedule = true
         scheduleLoading = true
         scheduleError = nil
-        defer { scheduleLoading = false }
+        defer {
+            scheduleLoading = false
+            isRefreshingSchedule = false
+        }
 
         do {
             let list: [Course]
@@ -752,7 +773,11 @@ final class AppState {
             courses = list
             AppLogger.shared.log("schedule \(school.id) ok, \(list.count) courses")
             // 拉成功就写缓存，下次启动不登录也能看首页。
-            ScheduleStore.save(schoolId: school.id, courses: list, studentName: studentName)
+            // build 43：缓存防冲刷（专家意见）——只有拉到的课表非空才写缓存；
+            // 解析失败/拦截页返回空数组时，绝不能把本地原本存好的课表覆盖成空。
+            if !list.isEmpty {
+                ScheduleStore.save(schoolId: school.id, courses: list, studentName: studentName)
+            }
             if list.isEmpty { scheduleError = "本周没有课程" }
         } catch let error as ScheduleError {
             AppLogger.shared.log("schedule \(school.id) error: \(error.errorDescription ?? "未知")")
@@ -768,17 +793,23 @@ final class AppState {
                 } else {
                     // 职师院重登（reloginGXVNU：空验证码登，最多试两次；
                     // 两次都要验证码才直接弹验证码弹窗，不经过“需要验证”）。
-                    if await reloginGXVNU() {
+                    let reloginOutcome = await reloginGXVNU()
+                    if reloginOutcome == .success {
                         do {
                             let list = try await GXVNUService.fetchSchedule(year: year, semester: semester)
                             if let name = GXVNUService.lastStudentName, !name.isEmpty {
                                 studentName = name
                             }
                             courses = list
-                            ScheduleStore.save(schoolId: school.id, courses: list, studentName: studentName)
+                            if !list.isEmpty {
+                                ScheduleStore.save(schoolId: school.id, courses: list, studentName: studentName)
+                            }
                         } catch {
                             scheduleError = (error as? LocalizedError)?.errorDescription ?? "拉取课表失败"
                         }
+                    } else if reloginOutcome == .captchaRequired {
+                        // 验证码弹窗已弹出，不再挂“需要验证”提示条。
+                        scheduleError = nil
                     } else {
                         scheduleError = "登录已过期，请重新登录"
                     }
@@ -796,9 +827,15 @@ final class AppState {
     /// 拉成绩（全部学年学期）。会话过期时自动重登一次再试。
     func refreshScores() async {
         guard isLoggedIn else { return }
+        // 防重入（build 43）：正在刷新时再点直接忽略。
+        guard !isRefreshingScores else { return }
+        isRefreshingScores = true
         scoresLoading = true
         scoresError = nil
-        defer { scoresLoading = false }
+        defer {
+            scoresLoading = false
+            isRefreshingScores = false
+        }
 
         do {
             let list: [CourseScore]
@@ -819,7 +856,8 @@ final class AppState {
                     scoresError = "登录已过期，请重新登录"
                 } else {
                     // 职师院重登（reloginGXVNU：同 refreshSchedule）。
-                    if await reloginGXVNU() {
+                    let reloginOutcome = await reloginGXVNU()
+                    if reloginOutcome == .success {
                         do {
                             let list = try await GXVNUService.fetchScores(year: year)
                             scores = list
@@ -827,6 +865,9 @@ final class AppState {
                         } catch {
                             scoresError = (error as? LocalizedError)?.errorDescription ?? "拉取成绩失败"
                         }
+                    } else if reloginOutcome == .captchaRequired {
+                        // 验证码弹窗已弹出，不再挂“需要验证”。
+                        scoresError = nil
                     } else {
                         scoresError = "登录已过期，请重新登录"
                     }
@@ -836,6 +877,54 @@ final class AppState {
             }
         } catch {
             scoresError = (error as? LocalizedError)?.errorDescription ?? "拉取成绩失败"
+        }
+    }
+
+    // MARK: - 考试
+
+    /// 拉考试安排（build 43 新增）。会话过期时自动重登一次再试（同课表/成绩）。
+    func refreshExams() async {
+        guard isLoggedIn else { return }
+        examsLoading = true
+        examsError = nil
+        defer { examsLoading = false }
+
+        do {
+            let list: [ExamItem]
+            if school.id == .gut {
+                list = try await GUTService.fetchExams()
+            } else {
+                list = try await GXVNUService.fetchExams(year: year, semester: semester)
+            }
+            exams = list
+            AppLogger.shared.log("exams \(school.id) ok, \(list.count) items")
+            if list.isEmpty { examsError = "暂无考试安排" }
+        } catch let error as ScheduleError {
+            if case .sessionExpired = error {
+                AppLogger.shared.log("exams \(school.id) session expired, relogin once")
+                if school.id == .gut {
+                    examsError = "登录已过期，请重新登录"
+                } else {
+                    let reloginOutcome = await reloginGXVNU()
+                    if reloginOutcome == .success {
+                        do {
+                            let list = try await GXVNUService.fetchExams(year: year, semester: semester)
+                            exams = list
+                            if list.isEmpty { examsError = "暂无考试安排" }
+                        } catch {
+                            examsError = (error as? LocalizedError)?.errorDescription ?? "拉取考试失败"
+                        }
+                    } else if reloginOutcome == .captchaRequired {
+                        examsError = nil
+                    } else {
+                        examsError = "登录已过期，请重新登录"
+                    }
+                }
+            } else {
+                examsError = error.errorDescription
+            }
+        } catch {
+            examsError = (error as? LocalizedError)?.errorDescription ?? "拉取考试失败"
         }
     }
 
