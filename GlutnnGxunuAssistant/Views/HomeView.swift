@@ -176,29 +176,28 @@ struct HomeView: View {
         return Color.white.opacity(0.7)
     }
 
-    /// 下节课胶囊的目标（原版 glass.dart GlassNextClassPill 同款循环）：
-    /// 先找第一节还没上的（下节）；没找到就用正在上的那节。
-    /// 注意原版有个小特点：正在上课时，胶囊显示的是下一节的课，但标题还是“正在上”
-    /// （循环里先记下正在上的那节、后遇到未上的又覆盖了目标、标题没改回来）——
-    /// 截图里“正在上 · 固体废弃物 … 24分后上课”就是这么来的，照原版复现，不自作主张改。
+    /// 下节课胶囊的目标（图二旧版写法）：
+    /// 正在上课时显示正在上的那节（标题“正在上”，第二行“X分后下课”）；
+    /// 没课在上时显示第一节还没上的（标题“下节”，第二行“X分后上课”）。
+    /// build 45：修正 build 31 照搬的 Flutter 怪癖（正在上却显示下一节课名），
+    /// Russell 2026-11-18 17:06 截图确认那是错的：17:03 第 8 节中国近现代史纲要
+    /// 还在上，胶囊却写了 19:30 的环境化学。按图二旧版改回来。
     private var pillTarget: (section: DaySection, isCurrent: Bool)? {
-        var next: DaySection?
-        var isCurrent = false
+        // 先找正在上的。
         for s in todaySections {
             let (text, state) = sectionStatus(section: s.section)
-            if state == "before" {
-                next = s
-                break
-            }
-            if state == "after" && next == nil {
-                if !text.contains("已结束") {
-                    next = s
-                    isCurrent = true
-                }
+            if state == "after" && !text.contains("已结束") {
+                return (s, true)
             }
         }
-        guard let target = next else { return nil }
-        return (target, isCurrent)
+        // 没在上，找第一节还没上的（下节）。
+        for s in todaySections {
+            let (_, state) = sectionStatus(section: s.section)
+            if state == "before" {
+                return (s, false)
+            }
+        }
+        return nil
     }
 
     /// 操作胶囊（玻璃圆角矩形 + 图标 + 文字）。
