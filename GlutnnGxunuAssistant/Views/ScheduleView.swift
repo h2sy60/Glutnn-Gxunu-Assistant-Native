@@ -1,4 +1,5 @@
 import SwiftUI
+import EventKit // 导出到日历（EventKit）：建日历、写课程事件、设提醒。
 
 // MARK: - 课表（原版 WakeUp 风，照 Flutter schedule.dart + bars.dart 一字不差）
 //
@@ -64,7 +65,7 @@ import SwiftUI
 struct ScheduleView: View {
     @Environment(AppState.self) private var appState
     @State private var displayWeek: Int = 0
-    @State private var showExportSoon = false
+    @State private var showExportPage = false
 
     private var week: Int { displayWeek == 0 ? appState.currentWeek : displayWeek }
     private var isCurrentWeek: Bool { week == appState.currentWeek }
@@ -123,9 +124,9 @@ struct ScheduleView: View {
                 }
                 Spacer()
                 HStack(spacing: 4) {
-                    // 导出到日历（原版跳 ScheduleExportPage；原生暂未实现，先提示）。
+                    // 导出到日历（原版 ScheduleExportPage）。
                     Button {
-                        showExportSoon = true
+                        showExportPage = true
                     } label: {
                         Text("导出")
                             .font(.system(size: 15, weight: .semibold))
@@ -133,9 +134,10 @@ struct ScheduleView: View {
                             .padding(.horizontal, 16)
                             .padding(.vertical, 10)
                     }
-                    // 白底页上的玻璃药丸必须显式加白 tint：整 App 强制深色模式，
-                    // 光靠 .preferredColorScheme(.light) 玻璃还是深灰（build 31 实测）。
-                    .glassEffect(.regular.tint(.white.opacity(0.75)), in: Capsule())
+                    // 白底页上的玻璃药丸：窗口在课表页已是亮色，.regular 本身就是
+                    // 浅色液态玻璃——不要再加白 tint。build 33 的教训：亮色窗口里
+                    // .white.opacity(0.75) 会把玻璃顶成不透光的纯白扁片，液态玻璃感全丢。
+                    .glassEffect(.regular, in: Capsule())
                     // 日期 + 定位钉，点按回到当前周。
                     Button {
                         backToCurrentWeek()
@@ -151,7 +153,7 @@ struct ScheduleView: View {
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
                     }
-                    .glassEffect(.regular.tint(.white.opacity(0.75)), in: Capsule())
+                    .glassEffect(.regular, in: Capsule())
                 }
             }
             .padding(.horizontal, 16)
@@ -227,8 +229,8 @@ struct ScheduleView: View {
         // 原版那种浅色玻璃；整 App 强制深色模式会让它俩变成深灰玻璃，丑。
         .preferredColorScheme(.light)
         .onAppear { displayWeek = appState.currentWeek }
-        .alert("导出功能即将上线", isPresented: $showExportSoon) {
-            Button("知道了", role: .cancel) {}
+        .fullScreenCover(isPresented: $showExportPage) {
+            ScheduleExportView()
         }
     }
 }
@@ -411,4 +413,406 @@ struct ScheduleGrid: View {
 #Preview {
     ScheduleView()
         .environment(AppState())
+}
+
+// MARK: - 导出到日历（原版 ScheduleExportPage，lib/pages/schedule_export.dart）
+//
+// 全屏页：顶栏返回 + 标题 + 导出；说明文字 + 日历名称卡 + 提醒卡 + 页脚计数。
+// 写入走 EventKit（原生无 device_calendar 可用）：删同名日历重建（蓝）、
+// 每个 occurrence 独立事件（无 RRULE）、上课提醒相对闹钟、下课提醒绝对时间闹钟。
+// 原生 Course 已是合并块（startSection..endSection），按 Course×weeks 展开即可，
+// 不复现 Flutter 单节第 1 节丢课的边界 bug。
+
+/// 课名缩短（Flutter lib/data.dart courseLongText2Short）：全角括号转半角 + 两门长课名缩写。
+func shortCourseName(_ name: String) -> String {
+    var s = name
+        .replacingOccurrences(of: "（", with: "(")
+        .replacingOccurrences(of: "）", with: ")")
+    if s == "毛泽东思想和中国特色社会主义理论体系概论" { s = "毛概" }
+    if s == "习近平新时代中国特色社会主义思想概论" { s = "习近平思想概论" }
+    return s
+}
+
+/// 导出结果。
+enum CalendarExportResult {
+    case success(exported: Int, endAlarmAdded: Int, total: Int)
+    case permission
+    case failure(String)
+}
+
+/// EventKit 导出器。全部操作放 @MainActor：EKEventStore 不是线程安全的，
+/// 主线程串行做最稳妥；每写 10 节让出一次，进度条才刷得动。
+@MainActor
+struct CalendarExporter {
+    /// 某节课在某周的起止时间。termStart = 学期第一周周一。
+    static func occurrenceRange(
+        school: SchoolConfig, course: Course, week: Int
+    ) -> (start: Date, end: Date)? {
+        let cal = Calendar(identifier: .gregorian)
+        guard week >= 1, course.weekday >= 1, course.weekday <= 7,
+              course.startSection >= 1, course.startSection <= school.sectionCount,
+              course.endSection >= course.startSection, course.endSection <= school.sectionCount
+        else { return nil }
+        // 日期 = 开学周一 + (week-1)*7 天 + (weekday-1) 天。
+        guard let day = cal.date(
+            byAdding: .day,
+            value: (week - 1) * 7 + (course.weekday - 1),
+            to: school.termStartDate
+        ) else { return nil }
+        let (sh, sm) = school.startTimeList[course.startSection - 1]
+        let (eh, em) = school.endTimeList[course.endSection - 1]
+        guard let start = cal.date(bySettingHour: sh, minute: sm, second: 0, of: day),
+              let end = cal.date(bySettingHour: eh, minute: em, second: 0, of: day)
+        else { return nil }
+        return (start, end)
+    }
+
+    /// 待导出的 occurrence 总数（Course × weeks）。
+    static func totalOccurrences(courses: [Course]) -> Int {
+        courses.reduce(0) { $0 + $1.weeks.count }
+    }
+
+    /// 执行导出。onProgress(done, total) 回到主线程更新进度条。
+    static func export(
+        courses: [Course],
+        school: SchoolConfig,
+        calendarName: String,
+        remindOn: Bool,
+        remindMinutes: Int,
+        secondRemind: Bool,
+        endRemind: Bool,
+        onProgress: @escaping (Int, Int) -> Void
+    ) async -> CalendarExportResult {
+        let store = EKEventStore()
+        // 权限：要完全读写（删旧日历要读，写事件要写）。已拒绝/受限直接报权限错。
+        let status = EKEventStore.authorizationStatus(for: .event)
+        if status == .denied || status == .restricted {
+            return .permission
+        }
+        if status != .fullAccess {
+            do {
+                let granted = try await store.requestFullAccessToEvents()
+                if !granted { return .permission }
+            } catch {
+                return .permission
+            }
+        }
+        // 删掉所有同名日历（重复导出不越导越多），再新建一本蓝日历。
+        for cal in store.calendars(for: .event) where cal.title == calendarName {
+            try? store.removeCalendar(cal, commit: true)
+        }
+        let calendar = EKCalendar(for: .event, eventStore: store)
+        calendar.title = calendarName
+        calendar.cgColor = UIColor.blue.cgColor
+        if let source = store.defaultCalendarForNewEvents?.source {
+            calendar.source = source
+        } else if let local = store.sources.first(where: { $0.sourceType == .local }) {
+            calendar.source = local
+        } else if let first = store.sources.first {
+            calendar.source = first
+        }
+        do {
+            try store.saveCalendar(calendar, commit: true)
+        } catch {
+            return .failure("创建日历失败，请检查日历权限")
+        }
+        // 逐条写事件。
+        let total = totalOccurrences(courses: courses)
+        var done = 0
+        var exported = 0
+        var endAlarmAdded = 0
+        var firstError: String?
+        for course in courses {
+            for week in course.weeks {
+                guard let range = occurrenceRange(school: school, course: course, week: week) else {
+                    done += 1
+                    onProgress(done, total)
+                    continue
+                }
+                // 结束 <= 开始是坏数据（Flutter 页上提示的「开始日期必须早于结束日期」）：
+                // 只算一条失败，不中断整批；全部失败才报这个错。
+                if range.end <= range.start {
+                    if firstError == nil { firstError = "开始日期必须早于结束日期" }
+                    done += 1
+                    onProgress(done, total)
+                    continue
+                }
+                let event = EKEvent(eventStore: store)
+                event.calendar = calendar
+                event.title = shortCourseName(course.name)
+                event.location = (course.location.isEmpty || course.location == "未知") ? nil : course.location
+                event.notes = course.teacher.isEmpty ? nil : "任课教师：\(course.teacher)"
+                event.startDate = range.start
+                event.endDate = range.end
+                var alarms: [EKAlarm] = []
+                if remindOn {
+                    alarms.append(EKAlarm(relativeOffset: -Double(remindMinutes * 60)))
+                    // 第二次提醒固定 5 分钟；首个已是 5 分钟时不再重复加。
+                    if secondRemind && remindMinutes != 5 {
+                        alarms.append(EKAlarm(relativeOffset: -5 * 60))
+                    }
+                }
+                if endRemind {
+                    alarms.append(EKAlarm(absoluteDate: range.end))
+                }
+                event.alarms = alarms.isEmpty ? nil : alarms
+                do {
+                    try store.save(event, span: .thisEvent, commit: true)
+                    exported += 1
+                    if endRemind { endAlarmAdded += 1 }
+                } catch {
+                    if firstError == nil { firstError = (error as NSError).localizedDescription }
+                }
+                done += 1
+                onProgress(done, total)
+                if done % 10 == 0 { await Task.yield() }
+            }
+        }
+        if exported == 0 {
+            return .failure(firstError ?? "写入失败")
+        }
+        return .success(exported: exported, endAlarmAdded: endAlarmAdded, total: total)
+    }
+}
+
+/// 导出到日历页。
+struct ScheduleExportView: View {
+    @Environment(AppState.self) private var appState
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var calendarName = ""
+    @State private var remindOn = true
+    @State private var remindMinutes = 15
+    @State private var secondRemind = false
+    @State private var endRemind = false
+    @State private var totalCount = 0
+    @State private var exporting = false
+    @State private var exportDone = 0
+    @State private var exportTotal = 0
+    @State private var resultMessage: String?
+    @State private var resultTitle = ""
+    @State private var showResult = false
+    @State private var toastText: String?
+
+    private let minuteOptions = [5, 10, 15, 30, 60]
+
+    /// 开学日期（yyyy-MM-dd）。
+    private var termStartText: String {
+        let c = Calendar(identifier: .gregorian)
+        let d = appState.school.termStartDate
+        return "\(c.component(.year, from: d))-\(String(format: "%02d", c.component(.month, from: d)))-\(String(format: "%02d", c.component(.day, from: d)))"
+    }
+
+    private var hasCourses: Bool { !appState.courses.isEmpty }
+
+    var body: some View {
+        ZStack {
+            Color(uiColor: .systemGroupedBackground)
+                .ignoresSafeArea()
+            VStack(spacing: 0) {
+                // 顶栏：返回 + 标题 + 导出。
+                HStack {
+                    Button { dismiss() } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(Color.black.opacity(0.87))
+                            .frame(width: 44, height: 44)
+                    }
+                    .glassEffect(.regular, in: Circle())
+                    Spacer()
+                    Text("导出到日历")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundStyle(.black)
+                    Spacer()
+                    Button { Task { await doExport() } } label: {
+                        Text("导出")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(Color.black.opacity(0.87))
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 10)
+                    }
+                    .glassEffect(.regular, in: Capsule())
+                    .disabled(exporting || !hasCourses)
+                    .opacity(exporting || !hasCourses ? 0.5 : 1)
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+                .padding(.bottom, 12)
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        // 开学日期说明。
+                        Text(hasCourses
+                             ? "当前课表设置的开学日期为 \(termStartText)，如果与实际不符，请刷新课表后重试"
+                             : "尚未拉取课表，请先登录教务并刷新课表后再导出。")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Color.black.opacity(0.6))
+                        // 权限说明。
+                        Text("如果导出时提示日历不能写入，请去系统设置，找到「桂工课程助手」并点击，更改日历权限为「完全读写」后再尝试导出")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Color.black.opacity(0.6))
+                        // 日历名称卡。
+                        HStack {
+                            Text("日历名称")
+                                .font(.system(size: 16))
+                                .foregroundStyle(.black)
+                            Spacer()
+                            TextField("", text: $calendarName)
+                                .font(.system(size: 16))
+                                .foregroundStyle(.black)
+                                .multilineTextAlignment(.trailing)
+                        }
+                        .padding(16)
+                        .background(.white, in: RoundedRectangle(cornerRadius: 20))
+                        // 报错提示。
+                        Text("如果导出时提示错误「开始日期必须早于结束日期」，说明课表里的上课时间有问题，存在下课时间早于上课时间的情况，请刷新课表后再尝试导出")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Color.black.opacity(0.6))
+                        // 提醒卡。
+                        VStack(spacing: 0) {
+                            Toggle("上课提醒", isOn: $remindOn)
+                                .font(.system(size: 16))
+                                .padding(16)
+                            Divider().padding(.leading, 16)
+                            // 上课前几分钟提醒：Menu 选档位；上课提醒关时不可点 + 变淡。
+                            HStack {
+                                Text("上课前几分钟提醒")
+                                    .font(.system(size: 16))
+                                    .foregroundStyle(.black)
+                                Spacer()
+                                Menu {
+                                    ForEach(minuteOptions, id: \.self) { m in
+                                        Button("\(m) 分钟") { remindMinutes = m }
+                                    }
+                                } label: {
+                                    HStack(spacing: 2) {
+                                        Text("\(remindMinutes) 分钟")
+                                            .font(.system(size: 16))
+                                            .foregroundStyle(Color.black.opacity(0.6))
+                                        Image(systemName: "chevron.up")
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .foregroundStyle(Color.black.opacity(0.6))
+                                    }
+                                }
+                                .disabled(!remindOn)
+                            }
+                            .padding(16)
+                            .opacity(remindOn ? 1 : 0.4)
+                            Divider().padding(.leading, 16)
+                            Toggle("第二次提醒", isOn: $secondRemind)
+                                .font(.system(size: 16))
+                                .padding(16)
+                                .disabled(!remindOn)
+                                .opacity(remindOn ? 1 : 0.4)
+                        }
+                        .background(.white, in: RoundedRectangle(cornerRadius: 20))
+                        // 下课提醒卡。
+                        Toggle("下课提醒", isOn: $endRemind)
+                            .font(.system(size: 16))
+                            .padding(16)
+                            .background(.white, in: RoundedRectangle(cornerRadius: 20))
+                        // 页脚计数。
+                        Text(totalCount == 0 && hasCourses
+                             ? "正在统计课程数量…"
+                             : "共 \(totalCount) 节课，将写入系统日历「\(calendarName)」。"
+                        )
+                            .font(.system(size: 14))
+                            .foregroundStyle(Color.black.opacity(0.6))
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 40)
+                }
+            }
+            // 导出进度（不可关闭）。
+            if exporting {
+                Color.black.opacity(0.38)
+                    .ignoresSafeArea()
+                VStack(spacing: 16) {
+                    ProgressView()
+                    Text("正在导出 \(exportDone)/\(exportTotal) 节课")
+                        .font(.system(size: 15))
+                        .foregroundStyle(.black)
+                }
+                .padding(24)
+                .background(.white, in: RoundedRectangle(cornerRadius: 20))
+            }
+            // 轻提示（名称空 / 无课程 / 其他错误）。
+            if let toast = toastText {
+                VStack {
+                    Spacer()
+                    Text(toast)
+                        .font(.system(size: 15))
+                        .foregroundStyle(Color.black.opacity(0.87))
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .glassEffect(.regular.tint(.white.opacity(0.75)), in: Capsule())
+                        .padding(.bottom, 40)
+                }
+            }
+        }
+        .preferredColorScheme(.light)
+        .onAppear {
+            if calendarName.isEmpty {
+                calendarName = "\(appState.school.displayName) 课表"
+            }
+            totalCount = CalendarExporter.totalOccurrences(courses: appState.courses)
+        }
+        .alert(LocalizedStringKey(resultTitle), isPresented: $showResult) {
+            Button("好的", role: .cancel) {}
+        } message: {
+            Text(resultMessage ?? "")
+        }
+    }
+
+    private func doExport() async {
+        let name = calendarName.trimmingCharacters(in: .whitespaces)
+        if name.isEmpty {
+            flashToast("日历名称不能为空")
+            return
+        }
+        if !hasCourses {
+            flashToast("没有可导出的课程，请先登录并刷新课表")
+            return
+        }
+        exporting = true
+        exportDone = 0
+        exportTotal = CalendarExporter.totalOccurrences(courses: appState.courses)
+        let result = await CalendarExporter.export(
+            courses: appState.courses,
+            school: appState.school,
+            calendarName: name,
+            remindOn: remindOn,
+            remindMinutes: remindMinutes,
+            secondRemind: secondRemind,
+            endRemind: endRemind
+        ) { done, total in
+            exportDone = done
+            exportTotal = total
+        }
+        exporting = false
+        switch result {
+        case .success(let exported, let endAdded, _):
+            resultTitle = "导出成功"
+            var msg = "已写入 \(exported) 节课到系统日历「\(name)」。"
+            if endRemind && endAdded < exported {
+                msg += "\n\n注意：下课提醒只加上了 \(endAdded) 节，请检查日历权限。"
+            }
+            resultMessage = msg
+            showResult = true
+        case .permission:
+            resultTitle = "日历不能写入"
+            resultMessage = "请去系统设置，找到「桂工课程助手」并点击，更改日历权限为「完全读写」后再尝试导出。"
+            showResult = true
+        case .failure(let message):
+            flashToast(message)
+        }
+    }
+
+    private func flashToast(_ text: String) {
+        toastText = text
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            if toastText == text { toastText = nil }
+        }
+    }
 }
