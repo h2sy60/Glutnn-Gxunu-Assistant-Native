@@ -394,7 +394,7 @@ struct AboutView: View {
                         Image(systemName: "graduationcap.fill")
                             .foregroundStyle(.secondary)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("桂工课程助手")
+                            Text("周周有善")
                             Text("版本 \(appVersion) (build \(appBuild))")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
