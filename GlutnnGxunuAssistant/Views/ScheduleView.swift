@@ -6,15 +6,18 @@ import SwiftUI
 //      “2026-11-18📍”玻璃药丸；点标题或日期都回到当前周。没有左右箭头，没有日期范围。
 // 周 strip：只有星期字（一 二 三 四 五 六 日），当天是黑色圆角 pill；
 //      showDayByWeekDay 默认 false，所以不显示日期数字。
-// 网格区：顶栏 + strip 固定在上，GeometryReader 量出剩余高度，TabView（左右划切周）
-//      拿明确高度填满它；每页里一个纵向 ScrollView 装 11 节网格（下滑看 10-11 节）。
+// 网格区：顶栏 + strip 固定在上；下面是一个普通纵向 ScrollView 填满剩余空间，
+//      装 11 节网格（下滑看 10-11 节）。左右横滑切周（DragGesture），
+//      点标题/日期回到当前周。
 //      行高按网格区可用高度算：（可用高 − 85）/ 除数，夹在 50–92；
 //      桂工除数 8.2（首屏 9 节）、职师院 9.2（首屏 10 节）。
-// 下坠教训（build 21/22/23 都栽在这）：GeometryReader 绝对不能放在 TabView 的页面里。
-//      苹果文档只说 GeometryReader“返回一个灵活的首选尺寸”，TabView / PageTabViewStyle
-//      两页根本没写尺寸规则（2026-11-18 核实过）。实测：GeometryReader 在页面里时，
-//      TabView 拿不到确定的高度，整个页就掉下去、顶栏和星期条之间出现大白空隙。
-//      正确做法：GeometryReader 包在 TabView 外面（量剩余高度），TabView 给明确 frame 高度。
+// 下坠教训（build 21/22/23/25 都栽在这，build 25 已证实）：
+//      page 式 TabView 的高度行为不可控——不管 GeometryReader 放页面里还是放外面、
+//      不管给不给明确 frame 高度，顶栏和星期条之间都会出现大白空隙、网格掉到半屏。
+//      build 25 把 GeometryReader 挪到 TabView 外面 + .frame(height:) 仍未修好，
+//      Russell 09:30 证实 build 25 截图里下坠还在。所以 build 26 彻底去掉 TabView，
+//      网格区只用普通 ScrollView（VStack 里能正常填满剩余空间，不会下坠），
+//      切周改用横滑手势 + 点标题回当前周。不要再把 TabView 拿回来。
 
 struct ScheduleView: View {
     @Environment(AppState.self) private var appState
@@ -46,6 +49,22 @@ struct ScheduleView: View {
     /// 回到当前周（原版点标题/日期都回到当前周）。
     private func backToCurrentWeek() {
         displayWeek = appState.currentWeek
+    }
+
+    /// 横滑切周：只有横向滑动明显大于纵向、且横向超过 60pt 时才切周；
+    /// 纵向滑动留给 ScrollView 自己处理，不冲突。
+    private var swipeGesture: some Gesture {
+        DragGesture(minimumDistance: 20, coordinateSpace: .local)
+            .onEnded { value in
+                let dx = value.translation.width
+                let dy = value.translation.height
+                guard abs(dx) > abs(dy), abs(dx) > 60 else { return }
+                if dx < 0 {
+                    displayWeek = min(20, week + 1)
+                } else {
+                    displayWeek = max(1, week - 1)
+                }
+            }
     }
 
     /// 底部留白 = 浮动低栏高 + 底部边距（Flutter kBottomBarHeight + kBottomBarBottomMargin = 85 + 0）。
@@ -109,12 +128,12 @@ struct ScheduleView: View {
                 .padding(.top, 4)
                 .padding(.bottom, 10)
 
-            // 网格区：GeometryReader 包在 TabView 外面，量出顶栏 + strip 之下的剩余高度；
-            // TabView 拿这个明确高度填满它。GeometryReader 绝不能放进 TabView 的页面里
-            //（会让 TabView 拿不到确定高度，整页掉下去——build 21/22/23 的下坠就是这么来的）。
+            // 网格区（build 26）：不再用 TabView。普通纵向 ScrollView 填满剩余空间，
+            // GeometryReader 只用来量高度算行高，不再用它去定任何视图的 frame，
+            // 不再有“量高度 → 定高度”的循环依赖。横滑切周用 highPriorityGesture，
+            // 切周时 .id(week) 让 ScrollView 回到顶部。
             GeometryReader { geo in
-                let gridH = geo.size.height
-                let rh = rowHeight(for: gridH)
+                let rh = rowHeight(for: geo.size.height)
                 if appState.scheduleLoading && appState.courses.isEmpty {
                     VStack {
                         Spacer()
@@ -143,30 +162,25 @@ struct ScheduleView: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    TabView(selection: $displayWeek) {
-                        ForEach(1...20, id: \.self) { w in
-                            ScrollView(.vertical, showsIndicators: false) {
-                                ScheduleGrid(
-                                    courses: appState.courses.filter { $0.weeks.contains(w) },
-                                    school: appState.school,
-                                    rowHeight: rh
-                                )
-                                .padding(.bottom, bottomClearance)
-                            }
-                            .refreshable {
-                                if !appState.isLoggedIn {
-                                    appState.showLoginSheet = true
-                                } else {
-                                    await appState.refreshSchedule()
-                                }
-                            }
-                            .tag(w)
+                    ScrollView(.vertical, showsIndicators: false) {
+                        ScheduleGrid(
+                            courses: weekCourses,
+                            school: appState.school,
+                            rowHeight: rh
+                        )
+                        .padding(.bottom, bottomClearance)
+                    }
+                    .id(week)
+                    .refreshable {
+                        if !appState.isLoggedIn {
+                            appState.showLoginSheet = true
+                        } else {
+                            await appState.refreshSchedule()
                         }
                     }
-                    .tabViewStyle(.page(indexDisplayMode: .never))
-                    .frame(height: gridH)
                 }
             }
+            .highPriorityGesture(swipeGesture)
         }
         .background(Color.white)
         .onAppear { displayWeek = appState.currentWeek }
