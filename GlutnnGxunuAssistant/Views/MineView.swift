@@ -183,12 +183,19 @@ struct MineView: View {
                                 .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 26))
                             }
 
-                            // 导出日志
+                            // 导出日志（build 64：日志写磁盘，重启还在，导出带表头，
+                            // 没日志时写明原因，不再是空文本）。
                             glassCard {
                                 HStack {
                                     ShareLink("导出日志", item: AppLogger.shared.exportText())
                                         .foregroundStyle(.white)
                                     Spacer()
+                                    Button("清空") {
+                                        AppLogger.shared.clear()
+                                        AppLogger.shared.log("log cleared by user")
+                                    }
+                                    .font(.caption)
+                                    .foregroundStyle(.white.opacity(0.6))
                                     Text("遇到问题时导出日志，方便定位。")
                                         .font(.caption)
                                         .foregroundStyle(.white.opacity(0.6))
