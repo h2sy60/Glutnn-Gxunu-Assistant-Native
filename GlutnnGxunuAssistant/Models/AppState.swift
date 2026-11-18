@@ -81,6 +81,12 @@ enum CredentialsStore {
         UserDefaults.standard.removeObject(forKey: schoolKey)
     }
 
+    /// 只清掉一所学校的账号（切换账号时调，别动另一所学校的已存账号）。
+    static func clear(schoolId: SchoolID) {
+        UserDefaults.standard.removeObject(forKey: studentIdKey(schoolId))
+        deletePassword(account: accountKey(schoolId))
+    }
+
     // MARK: - Keychain（密码）
 
     private static func savePassword(_ password: String, account: String) {
@@ -190,9 +196,12 @@ enum ToastKind {
     case error, success, loading, info
 }
 
-/// 提示条的点击动作：目前只有“需要验证”——点按后弹登录页重新验证。
+/// 提示条的点击动作：
+/// - showLogin：没登录时点提示条，弹整页登录（输账号密码）。
+/// - reverify：已登录但会话过期时点“需要验证”，走验证码弹窗重登（不是整页登录）。
 enum ToastAction {
     case showLogin
+    case reverify
 }
 
 /// 一颗提示条：类型 + 文字 + 显示秒数 + 可选点击动作。
@@ -251,8 +260,8 @@ final class AppState {
     /// 原版提示条：液态玻璃药丸（圆角 25），左图标 + 右文字，浮在页面底部、
     /// 低栏上方 10pt，左右留白 100，几秒后自动消失。类型：error 红 !（错误）、
     /// success 绿 ✓（成功）、loading 蓝 🔗（进行中）、info 星星（提示）。
-    /// “需要验证”是带点击动作的版本：文字变蓝色，点按后回调（原版是
-    /// pushAndRemoveUntil 回首页重新登录；原生是弹登录页）。
+    /// “需要验证”是带点击动作的版本：文字变蓝色，点按后走验证码弹窗重登
+    /// （不是整页登录；整页登录只在首次登录 / 切换账号时用）。
     var toast: Toast?
 
     func showToast(_ kind: ToastKind, _ text: String, duration: TimeInterval = 2, action: ToastAction? = nil) {
@@ -271,12 +280,16 @@ final class AppState {
         toast = nil
     }
 
-    /// 点提示条：有动作（需要验证）就执行动作，否则只是关掉。
+    /// 点提示条：有动作就执行动作，否则只是关掉。
+    /// “需要验证”走验证码弹窗重登（requestReverification），不是整页登录。
     func handleToastTap() {
         guard let t = toast else { return }
         if t.action == .showLogin {
             dismissToast()
             showLoginSheet = true
+        } else if t.action == .reverify {
+            dismissToast()
+            Task { await requestReverification() }
         } else {
             dismissToast()
         }
@@ -288,6 +301,13 @@ final class AppState {
     var captchaImageData: Data?
     var captchaText = ""
     var showCaptcha = false
+
+    /// 验证码弹窗（原版 dialog.dart showCaptchaDialog 同款）：
+    /// 会话过期点“需要验证”时弹，不占整页；登录页那个整页表单只在
+    /// 首次登录 / 切换账号时用。弹窗自己的输入框与校验中状态。
+    var showCaptchaDialog = false
+    var captchaDialogText = ""
+    var captchaChecking = false
 
     init() {
         updateTermFromDate()
@@ -374,6 +394,120 @@ final class AppState {
     }
 
     // MARK: - 登录
+    //
+    // 登录流程（build 31 重设计，Russell 2026-11-18 10:30“把登录这个功能捋清思绪，重新设计”）：
+    // 整页登录（LoginView，全屏、可关闭）只在两种情况用：
+    //   (1) 首次登录——没已存账号，点刷新/成绩/考试/请先登录时弹；
+    //   (2) 切换账号——我的页“更换账号”清掉本校账号后直接弹。
+    // 其余情况都不开整页：
+    //   - 启动：有已存账号就按旧版语义算已登录（isLoggedIn=true），首页直接读缓存；
+    //     职师院静默登录一次，桂工只预填 + 取验证码图（不空验证码试登）。
+    //   - 会话过期（拉课表/成绩时发现）：首页弹“需要验证”提示条；
+    //     点按 → 验证码弹窗（showCaptchaDialog，居中浮层，不占整页）：
+    //     桂工取图让用户输码重登，职师院先静默重登、要码时才弹弹窗；
+    //     成功后重拉数据并提示“数据已更新!”；验证码错留在弹窗里换图重试；
+    //     只有账号/密码本身有问题时，才回整页登录。
+    //   - 退出登录：清掉全部已存账号 + 缓存，不自动弹登录页（用户点“请先登录”再进）。
+    // isLoggedIn = “有已存账号”，不是“本次会话已验证”；会话过期不把它置 false，
+    // 否则验证码弹窗那条路走不通（刷新/成绩会直接弹整页登录）。
+
+    /// 会话过期后的重新验证（点“需要验证”时调，原版 showCaptchaDialog 同款）：
+    /// 桂工每次都要验证码——取图，弹验证码弹窗；
+    /// 职师院默认不要验证码——先用已存账号静默重登，成功就直接重拉课表，
+    /// 服务器要求验证码时才取图弹弹窗，账号/密码有问题时回整页登录。
+    /// 成功后重拉课表并提示“数据已更新!”；失败留在弹窗里换图重试，
+    /// 只有账号/密码问题才回整页登录。
+    func requestReverification() async {
+        guard !studentId.isEmpty, !password.isEmpty else {
+            showLoginSheet = true
+            return
+        }
+        if school.id == .gut {
+            await fetchCaptcha()
+            if captchaImageData != nil {
+                captchaDialogText = ""
+                captchaChecking = false
+                showCaptchaDialog = true
+            } else {
+                showToast(.error, "验证码获取失败，请稍后重试", duration: 4)
+                showLoginSheet = true
+            }
+            return
+        }
+        // 职师院：静默重登。
+        let outcome = await GXVNUService.login(studentId: studentId, password: password, captcha: "")
+        switch outcome {
+        case .success:
+            isLoggedIn = true
+            await refreshSchedule()
+            if scheduleError == nil {
+                showToast(.success, "数据已更新!", duration: 1)
+            } else {
+                showToast(.error, scheduleError ?? "拉取失败", duration: 4)
+            }
+        case .captchaRequired:
+            await fetchCaptcha()
+            if captchaImageData != nil {
+                captchaDialogText = ""
+                captchaChecking = false
+                showCaptchaDialog = true
+            } else {
+                showLoginSheet = true
+            }
+        case .failure(let message):
+            showToast(.error, message, duration: 4)
+            isLoggedIn = false
+            showLoginSheet = true
+        }
+    }
+
+    /// 验证码弹窗点“继续”：用已存账号 + 输入的验证码重登。
+    /// 成功：关弹窗，重拉课表并提示；验证码错：留在弹窗里，提示 + 换一张图再试；
+    /// 账号/密码问题：弹窗解决不了，关弹窗回整页登录。
+    func confirmCaptchaDialog() async {
+        guard !captchaChecking else { return }
+        guard !captchaDialogText.isEmpty else {
+            showToast(.error, "请输入验证码", duration: 2)
+            return
+        }
+        captchaChecking = true
+        defer { captchaChecking = false }
+        let outcome: LoginOutcome
+        if school.id == .gut {
+            outcome = await GUTService.login(studentId: studentId, password: password, captcha: captchaDialogText)
+        } else {
+            outcome = await GXVNUService.login(studentId: studentId, password: password, captcha: captchaDialogText)
+        }
+        switch outcome {
+        case .success:
+            AppLogger.shared.log("reverify \(school.id) success")
+            isLoggedIn = true
+            showCaptchaDialog = false
+            captchaDialogText = ""
+            captchaText = ""
+            showCaptcha = false
+            await refreshSchedule()
+            if scheduleError == nil {
+                showToast(.success, "数据已更新!", duration: 1)
+            } else {
+                showToast(.error, scheduleError ?? "拉取失败", duration: 4)
+            }
+        case .failure(let message):
+            AppLogger.shared.log("reverify \(school.id) failure: \(message)")
+            if message.contains("验证码") {
+                showToast(.error, message, duration: 4)
+                await fetchCaptcha()
+            } else {
+                showCaptchaDialog = false
+                isLoggedIn = false
+                loginError = message
+                showLoginSheet = true
+            }
+        case .captchaRequired:
+            showToast(.error, "请输入验证码", duration: 2)
+            await fetchCaptcha()
+        }
+    }
 
     /// 登录。成功后自动拉课表。
     func login() async {
@@ -428,6 +562,32 @@ final class AppState {
             loginError = "请输入验证码"
             await fetchCaptcha()
         }
+    }
+
+    /// 切换账号（我的页“更换账号”）：只清本校已存账号 + 本校课表缓存，
+    /// 回到未登录态，并直接打开登录页让用户输新账号。
+    /// （旧 logout 只清状态不开登录页，点完像没反应——就是 Russell 说的“坏了”。
+    /// 另外旧 logout 用 clearAll 会连另一所学校的账号一起清掉。）
+    func switchAccount() {
+        CredentialsStore.clear(schoolId: school.id)
+        ScheduleStore.clear(schoolId: school.id)
+        isLoggedIn = false
+        studentId = ""
+        password = ""
+        studentName = ""
+        courses = []
+        scores = []
+        scoresError = nil
+        scheduleError = nil
+        loginError = nil
+        captchaImageData = nil
+        captchaText = ""
+        captchaDialogText = ""
+        showCaptcha = false
+        showCaptchaDialog = false
+        NetworkClient.shared.cookies.clearAll()
+        // 打开登录页（整页），让用户直接输新账号。
+        showLoginSheet = true
     }
 
     func logout() {
@@ -492,9 +652,12 @@ final class AppState {
             AppLogger.shared.log("schedule \(school.id) error: \(error.errorDescription ?? "未知")")
             if case .sessionExpired = error {
                 // 会话过期：职师院可静默重登一次再拉；桂工每次都要验证码，
-                // 空验证码重登必失败还记一次失败，直接落回登录页等用户输验证码。
+                // 空验证码重登必失败还记一次失败，不在这里重登——
+                // 只记错误，等首页弹“需要验证”，点按走验证码弹窗重登。
+                // 注意：不要在这里把 isLoggedIn 置 false——isLoggedIn 是“有已存账号”
+                // （旧版语义），会话过期不等于账号没了；置 false 会让首页的
+                // 刷新/成绩/考试直接弹整页登录，验证码弹窗那条路就走不通了。
                 if school.id == .gut {
-                    isLoggedIn = false
                     scheduleError = "登录已过期，请重新登录"
                 } else {
                     let outcome = await GXVNUService.login(studentId: studentId, password: password, captcha: "")
@@ -510,7 +673,6 @@ final class AppState {
                             scheduleError = (error as? LocalizedError)?.errorDescription ?? "拉取课表失败"
                         }
                     } else {
-                        isLoggedIn = false
                         scheduleError = "登录已过期，请重新登录"
                     }
                 }
@@ -544,9 +706,9 @@ final class AppState {
         } catch let error as ScheduleError {
             if case .sessionExpired = error {
                 AppLogger.shared.log("scores \(school.id) session expired, relogin once")
-                // 桂工重登要验证码，直接落回登录页；职师院静默重登一次。
+                // 桂工重登要验证码，不在这里重登，等“需要验证”走验证码弹窗；
+                // 职师院静默重登一次。会话过期不置 isLoggedIn=false（同 refreshSchedule）。
                 if school.id == .gut {
-                    isLoggedIn = false
                     scoresError = "登录已过期，请重新登录"
                 } else {
                     let outcome = await GXVNUService.login(studentId: studentId, password: password, captcha: "")
@@ -559,7 +721,6 @@ final class AppState {
                             scoresError = (error as? LocalizedError)?.errorDescription ?? "拉取成绩失败"
                         }
                     } else {
-                        isLoggedIn = false
                         scoresError = "登录已过期，请重新登录"
                     }
                 }
