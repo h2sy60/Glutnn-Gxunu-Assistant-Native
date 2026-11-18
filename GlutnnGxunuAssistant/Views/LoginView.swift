@@ -116,7 +116,7 @@ struct LoginView: View {
                                         Image(uiImage: uiImage)
                                             .resizable()
                                             .scaledToFit()
-                                            .frame(width: 160, height: 50)
+                                            .frame(width: 100, height: 40)
                                             .clipShape(RoundedRectangle(cornerRadius: 8))
                                             .onTapGesture {
                                                 Task { await appState.fetchCaptcha() }
@@ -124,7 +124,7 @@ struct LoginView: View {
                                     } else {
                                         RoundedRectangle(cornerRadius: 8)
                                             .fill(Color.white.opacity(0.2))
-                                            .frame(width: 160, height: 50)
+                                            .frame(width: 100, height: 40)
                                             .overlay(Text("点我刷新").font(.caption).foregroundStyle(.white))
                                             .onTapGesture {
                                                 Task { await appState.fetchCaptcha() }
@@ -172,6 +172,9 @@ struct LoginView: View {
                     }
                     .padding(.horizontal, 20)
                 }
+                // 键盘弹起时不把整页顶上去（Russell 2026-11-18 10:57：输入账号密码会抬高，
+                // 可以不抬高）。表单在屏幕上半部分，键盘盖不住输入框，不用自动避让。
+                .ignoresSafeArea(.keyboard)
             }
             .navigationBarHidden(true)
         }
