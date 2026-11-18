@@ -298,7 +298,21 @@ struct ExamItem: Identifiable {
     let examName: String
     let campus: String
     /// 是否已考（build 58：旧项目 getExams 按考试结束时间算；职师院暂不算，默认 false）。
-    let isPast: Bool = false
+    let isPast: Bool
+
+    /// build 61：显式初始化器。带默认值的 let 不进成员初始化器
+    /// （Swift 规则），build 58 的 `isPast:` 调用在 CI 编译失败
+    /// （extra argument 'isPast'）。这里显式写出，isPast 默认 false，
+    /// 桂工传 true、职师院不传。
+    init(courseName: String, time: String, location: String, seatNumber: String, examName: String, campus: String, isPast: Bool = false) {
+        self.courseName = courseName
+        self.time = time
+        self.location = location
+        self.seatNumber = seatNumber
+        self.examName = examName
+        self.campus = campus
+        self.isPast = isPast
+    }
 }
 
 // MARK: - 桂工教学计划（build 58，按旧项目 TeachingPlan/CourseInfo）
