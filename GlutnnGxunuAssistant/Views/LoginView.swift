@@ -30,9 +30,11 @@ struct LoginView: View {
                     .ignoresSafeArea()
 
                 // 登录表单不用 ScrollView：ScrollView 会在键盘弹起时自动把内容往上
-                // 滚、把顶栏顶出屏幕（build 32 只加 .ignoresSafeArea(.keyboard) 没用，
-                // 滚是焦点驱动的，不吃 safe area）。表单满打满算不到 500pt，
-                // 小屏也放得下，直接用 VStack，键盘再也顶不动它。
+                // 滚、把顶栏顶出屏幕。只用 VStack 还不够——build 33 的 VStack +
+                // 内层 .ignoresSafeArea(.keyboard) 照样被顶上去（build 37 实测：
+                // 桂工选校条顶到状态栏）。Apple 手册说避让开关要放在最外层容器
+                // （NavigationStack），内层 VStack 的不管用；再加一个 Spacer
+                // 占满剩余高度，safe area 缩小时 Spacer 先缩，内容钉在顶部。
                 VStack(spacing: 20) {
                         // 学校名（44pt 白字 + 阴影）+ 右上角关闭钮（旧版登录页同款：点 X 回首页，不用登录也能看）。
                         HStack(alignment: .center) {
@@ -172,16 +174,23 @@ struct LoginView: View {
                             .font(.caption)
                             .foregroundStyle(.white.opacity(0.7))
                             .padding(.top, 8)
+
+                        // 占满剩余高度：键盘弹起时 safe area 缩小，Spacer 先缩，
+                        // 内容钉在顶部不动。没有 Spacer 的定高内容会被居中顶出屏幕。
+                        Spacer()
                     }
                     .padding(.horizontal, 20)
                     // 顶对齐、占满屏：没有 ScrollView 兜底，VStack 自己要钉在顶部。
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                    // 键盘弹起时不把整页顶上去（Russell 2026-11-18 10:57：输入账号密码会抬高，
-                    // 可以不抬高）。表单在屏幕上半部分，键盘盖不住输入框，不用自动避让。
-                    .ignoresSafeArea(.keyboard)
             }
             .navigationBarHidden(true)
         }
+        // 键盘避让关在最外层（NavigationStack），不是内层 VStack：
+        // Apple 手册（“Adding a background to your view”，SignInView 同款）
+        // 把 .ignoresSafeArea(.keyboard) 放在外层容器上；内层 VStack
+        // 上的那个 build 33 就证实没用——NavigationStack 才是向内容
+        // 提供键盘 safe area 的容器，改它才管用（WWDC21 10021）。
+        .ignoresSafeArea(.keyboard, edges: .bottom)
         .task {
             // 桂工默认要验证码，进页就取一张。
             if appState.school.captchaRequired && appState.captchaImageData == nil {
