@@ -182,8 +182,13 @@ struct LoginView: View {
                     .padding(.horizontal, 20)
                     // 顶对齐、占满屏：没有 ScrollView 兜底，VStack 自己要钉在顶部。
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    // 键盘避让三层都关（build 40：只关 NavigationStack 不够，
+                    // build 38 真机还抬。ZStack 和 VStack 也各关一遍，
+                    // 哪层在管布局就让哪层忽略键盘）。
+                    .ignoresSafeArea(.keyboard)
             }
             .navigationBarHidden(true)
+            .ignoresSafeArea(.keyboard)
         }
         // 键盘避让关在最外层（NavigationStack），不是内层 VStack：
         // Apple 手册（“Adding a background to your view”，SignInView 同款）
