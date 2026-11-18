@@ -7,6 +7,10 @@ struct HomeView: View {
     @Binding var selectedTab: Int
     @State private var showExams = false
     @State private var showScores = false
+    /// 更多功能（build 50，职师院专属）：学分 / 教学执行计划 / 更多。
+    @State private var showCredits = false
+    @State private var showTeachingPlan = false
+    @State private var showMore = false
     /// 刷新防刷计数（原版 home.dart refresh() 同款）：点 7 下“你太快了!”，
     /// 8 下以上“你慢一点!”+ 5 秒冷却。
     @State private var refreshClickCount = 0
@@ -399,7 +403,7 @@ struct HomeView: View {
                         .padding(.horizontal, 20)
                     }
 
-                    // 三个操作胶囊（旧版：未登录时点它们弹登录页，登录后才做事）
+                    // 第一行操作胶囊（居中；未登录时点它们弹登录页，登录后才做事）
                     HStack(spacing: 12) {
                         actionChip(icon: "arrow.clockwise", label: "刷新") {
                             Task { await refreshWithFeedback() }
@@ -419,8 +423,41 @@ struct HomeView: View {
                             }
                         }
                     }
+                    .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.top, 16)
                     .padding(.horizontal, 20)
+
+                    // 第二行操作胶囊（build 50，职师院专属，居中）：
+                    // 学分（已选课程与总学分）/ 教学（教学执行计划）/ 更多
+                    // （待办、评教、个人信息、学籍预警等）。桂工没有对应接口，不显示。
+                    if appState.school.id == .gxvnu {
+                        HStack(spacing: 12) {
+                            actionChip(icon: "creditcard.fill", label: "学分") {
+                                if !appState.isLoggedIn {
+                                    appState.showLoginSheet = true
+                                } else {
+                                    showCredits = true
+                                }
+                            }
+                            actionChip(icon: "book.fill", label: "教学") {
+                                if !appState.isLoggedIn {
+                                    appState.showLoginSheet = true
+                                } else {
+                                    showTeachingPlan = true
+                                }
+                            }
+                            actionChip(icon: "ellipsis.circle.fill", label: "更多") {
+                                if !appState.isLoggedIn {
+                                    appState.showLoginSheet = true
+                                } else {
+                                    showMore = true
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.top, 12)
+                        .padding(.horizontal, 20)
+                    }
 
                     // 今日课程（Russell 2026-11-18 10:56：改回今日课程/明日课程）
                     Text("今日课程")
@@ -498,6 +535,15 @@ struct HomeView: View {
             }
             .navigationDestination(isPresented: $showScores) {
                 ScoreView()
+            }
+            .navigationDestination(isPresented: $showCredits) {
+                GXVNUCreditsView()
+            }
+            .navigationDestination(isPresented: $showTeachingPlan) {
+                GXVNUTeachingPlanView()
+            }
+            .navigationDestination(isPresented: $showMore) {
+                GXVNUMoreView()
             }
         }
     }

@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit // 仅用于把学生照片 Data 解成 UIImage 再交给 SwiftUI Image 显示。
 
 /// 我的（Flutter 版形态）：壁纸 + 玻璃卡片。
 struct MineView: View {
@@ -74,23 +75,6 @@ struct MineView: View {
                                             .foregroundStyle(.white.opacity(0.7))
                                     }
                                 }
-                            }
-
-                            // 成绩查询
-                            NavigationLink(destination: ScoreView()) {
-                                HStack {
-                                    Image(systemName: "chart.bar.fill")
-                                        .foregroundStyle(.white)
-                                    Text("成绩查询")
-                                        .foregroundStyle(.white)
-                                    Spacer()
-                                    Image(systemName: "chevron.right")
-                                        .foregroundStyle(.white.opacity(0.7))
-                                }
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 14)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 26))
                             }
 
                             // 课表设置（build 48，参考 WakeUp「课表外观」）
@@ -525,5 +509,658 @@ struct AboutView: View {
             if lv != cv { return lv > cv }
         }
         return false
+    }
+}
+
+// MARK: - 更多（build 50，职师院专属）：HAR 抓包确认值得做的功能入口
+//
+// 首页第二行「更多」→ 本页：学分、教学执行计划、学生评教、待办事项、
+// 个人信息、学籍预警。全部只读（评教的打分仍需在教务网页完成）。
+// 桂工没有对应接口，本页只在职师院显示（首页第二行已按学校隐藏）。
+
+struct GXVNUMoreView: View {
+    var body: some View {
+        ZStack {
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
+            List {
+                Section("学习") {
+                    NavigationLink(destination: GXVNUCreditsView()) {
+                        moreRowContent(icon: "creditcard.fill", title: "学分", subtitle: "已选课程与总学分")
+                    }
+                    NavigationLink(destination: GXVNUTeachingPlanView()) {
+                        moreRowContent(icon: "book.fill", title: "教学执行计划", subtitle: "本学院各专业培养方案概览")
+                    }
+                    NavigationLink(destination: GXVNUEvaluationsView()) {
+                        moreRowContent(icon: "star.fill", title: "学生评教", subtitle: "待评课程与提交情况")
+                    }
+                }
+                Section("通知与学籍") {
+                    NavigationLink(destination: GXVNUToDosView()) {
+                        moreRowContent(icon: "bell.fill", title: "待办事项", subtitle: "调课、补课等提醒")
+                    }
+                    NavigationLink(destination: GXVNUProfileView()) {
+                        moreRowContent(icon: "person.fill", title: "个人信息", subtitle: "学院、专业、班级与照片")
+                    }
+                    NavigationLink(destination: GXVNUWarningView()) {
+                        moreRowContent(icon: "exclamationmark.triangle.fill", title: "学籍预警", subtitle: "风险课程与预警学分")
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
+        }
+        .navigationTitle("更多")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func moreRowContent(icon: String, title: String, subtitle: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: icon)
+                .foregroundStyle(.secondary)
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                Text(subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+// MARK: - 待办事项（build 50）：调课/补课提醒（index_cxDbsy）
+
+struct GXVNUToDosView: View {
+    @State private var todos: [GXVNUTodoItem] = []
+    @State private var isLoading = false
+    @State private var errorMessage: String? = nil
+
+    var body: some View {
+        ZStack {
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
+            if isLoading && todos.isEmpty {
+                ProgressView("正在拉取待办事项…")
+            } else if let errorMessage, todos.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                    Text(errorMessage)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Button("重新拉取") { Task { await load() } }
+                }
+            } else if todos.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "bell")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                    Text("暂无待办事项")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                List($todos, id: \.id) { $todo in
+                    let t = $todo.wrappedValue
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            if !t.isRead {
+                                Circle()
+                                    .fill(.blue)
+                                    .frame(width: 8, height: 8)
+                            }
+                            Text(t.title)
+                                .font(.headline)
+                                .fontWeight(t.isRead ? .regular : .bold)
+                        }
+                        if !t.time.isEmpty {
+                            Text(t.time)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        if !t.content.isEmpty {
+                            Text(t.content)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(3)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                .listStyle(.insetGrouped)
+                .refreshable { await load() }
+            }
+        }
+        .navigationTitle("待办事项")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await load() }
+    }
+
+    private func load() async {
+        guard !isLoading else { return }
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            todos = try await GXVNUService.fetchTodos()
+            errorMessage = nil
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? "拉取失败，请稍后重试"
+        }
+    }
+}
+
+// MARK: - 学生评教（build 50）：待评列表 + 统计（xspj，全部只读）
+//
+// 打分表单是 HTML（xspj_cxXspjDisplay），本版只做只读列表与统计；
+// 真正打分请在教务系统网页完成（页底有提示）。
+
+struct GXVNUEvaluationsView: View {
+    @State private var evaluations: [GXVNUEvaluationItem] = []
+    @State private var stats: GXVNUEvaluationStats? = nil
+    @State private var isLoading = false
+    @State private var errorMessage: String? = nil
+
+    var body: some View {
+        ZStack {
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
+            if isLoading && evaluations.isEmpty {
+                ProgressView("正在拉取评教信息…")
+            } else if let errorMessage, evaluations.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                    Text(errorMessage)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Button("重新拉取") { Task { await load() } }
+                }
+            } else if evaluations.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "star")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                    Text("暂无待评教课程")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                VStack(spacing: 0) {
+                    if let stats {
+                        HStack(spacing: 24) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("待评")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text("\(stats.pending) 门")
+                                    .font(.title3)
+                                    .fontWeight(.bold)
+                                    .foregroundStyle(stats.pending > 0 ? .orange : .primary)
+                            }
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("已提交")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text("\(stats.submitted) 门")
+                                    .font(.title3)
+                                    .fontWeight(.bold)
+                            }
+                            Spacer()
+                            Text("共 \(stats.total) 门")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding()
+                        .background(Color(.secondarySystemGroupedBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .padding(.horizontal)
+                        .padding(.top, 8)
+                    }
+
+                    List($evaluations, id: \.id) { $evaluation in
+                        let e = $evaluation.wrappedValue
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(e.courseName)
+                                    .font(.headline)
+                                Spacer()
+                                Text(e.isPending ? "待评" : (e.statusText.isEmpty ? "已评" : e.statusText))
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(e.isPending ? .orange : .green)
+                            }
+                            Text("\(e.teacher.isEmpty ? "—" : e.teacher)\(e.className.isEmpty ? "" : " · \(e.className)")")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                            if !e.location.isEmpty || !e.time.isEmpty {
+                                Text("\(e.location)\(e.location.isEmpty || e.time.isEmpty ? "" : " · ")\(e.time)")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .listStyle(.insetGrouped)
+                    .refreshable { await load() }
+
+                    Text("评教打分请在教务系统网页完成")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.vertical, 8)
+                }
+            }
+        }
+        .navigationTitle("学生评教")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await load() }
+    }
+
+    private func load() async {
+        guard !isLoading else { return }
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            async let fetchedStats = GXVNUService.fetchEvaluationStats()
+            async let fetchedList = GXVNUService.fetchEvaluations()
+            let (s, list) = try await (fetchedStats, fetchedList)
+            stats = s
+            evaluations = list
+            errorMessage = nil
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? "拉取失败，请稍后重试"
+        }
+    }
+}
+
+// MARK: - 学分（build 50）：已选课程与总学分（xsxxwh_cxXsxkxx）
+
+struct GXVNUCreditsView: View {
+    @State private var courses: [GXVNUSelectedCourse] = []
+    @State private var isLoading = false
+    @State private var errorMessage: String? = nil
+
+    /// 已选总学分。
+    private var totalCredits: Double {
+        courses.reduce(0) { $0 + $1.credit }
+    }
+
+    var body: some View {
+        ZStack {
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
+            if isLoading && courses.isEmpty {
+                ProgressView("正在拉取选课信息…")
+            } else if let errorMessage, courses.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                    Text(errorMessage)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Button("重新拉取") { Task { await load() } }
+                }
+            } else if courses.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "creditcard")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                    Text("暂无选课信息")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                VStack(spacing: 0) {
+                    HStack(spacing: 24) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("已选总学分")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(String(format: "%.1f", totalCredits))
+                                .font(.title3)
+                                .fontWeight(.bold)
+                        }
+                        Spacer()
+                        Text("\(courses.count) 门课")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding()
+                    .background(Color(.secondarySystemGroupedBackground))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .padding(.horizontal)
+                    .padding(.top, 8)
+
+                    List($courses, id: \.id) { $course in
+                        let c = $course.wrappedValue
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(c.courseName)
+                                    .font(.headline)
+                                Spacer()
+                                Text("\(c.credit, specifier: "%.1f") 学分")
+                                    .font(.subheadline)
+                                    .fontWeight(.semibold)
+                            }
+                            Text("\(c.teacher.isEmpty ? "—" : c.teacher)\(c.category.isEmpty ? "" : " · \(c.category)")")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                            if !c.location.isEmpty || !c.time.isEmpty {
+                                Text("\(c.location)\(c.location.isEmpty || c.time.isEmpty ? "" : " · ")\(c.time)")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .listStyle(.insetGrouped)
+                    .refreshable { await load() }
+                }
+            }
+        }
+        .navigationTitle("学分")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await load() }
+    }
+
+    private func load() async {
+        guard !isLoading else { return }
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            courses = try await GXVNUService.fetchSelectedCourses()
+            errorMessage = nil
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? "拉取失败，请稍后重试"
+        }
+    }
+}
+
+// MARK: - 教学执行计划（build 50）：本学院各专业培养方案概览（jxzxjhck）
+//
+// 先 resolveAcademicIDs（个人信息页 + 专业下拉）取学院/年级代码，
+// 再按学院 + 年级拉计划列表；本专业打“本专业”标记。
+
+struct GXVNUTeachingPlanView: View {
+    @State private var plans: [GXVNUTeachingPlan] = []
+    @State private var myMajor: String = ""
+    @State private var isLoading = false
+    @State private var errorMessage: String? = nil
+
+    var body: some View {
+        ZStack {
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
+            if isLoading && plans.isEmpty {
+                ProgressView("正在拉取教学执行计划…")
+            } else if let errorMessage, plans.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                    Text(errorMessage)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Button("重新拉取") { Task { await load() } }
+                }
+            } else if plans.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "book")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                    Text("暂无教学执行计划")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                List($plans, id: \.id) { $plan in
+                    let p = $plan.wrappedValue
+                    let isMine = !myMajor.isEmpty && p.majorName == myMajor
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(p.majorName)
+                                .font(.headline)
+                            if isMine {
+                                Text("本专业")
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(Color.blue)
+                                    .clipShape(Capsule())
+                            }
+                        }
+                        Text("\(p.gradeName.isEmpty ? "" : "\(p.gradeName) · ")\(p.campus)")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        Text("\(p.courseCount) 门课 · \(p.hours) 学时 · 总学分 \(p.totalCredits)")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                }
+                .listStyle(.insetGrouped)
+                .refreshable { await load() }
+            }
+        }
+        .navigationTitle("教学执行计划")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await load() }
+    }
+
+    private func load() async {
+        guard !isLoading else { return }
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            let ids = try await GXVNUService.resolveAcademicIDs()
+            myMajor = ids.major
+            plans = try await GXVNUService.fetchTeachingPlan(ids: ids)
+            errorMessage = nil
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? "拉取失败，请稍后重试"
+        }
+    }
+}
+
+// MARK: - 个人信息（build 50）：学院/专业/班级/照片（xsgrxxwh + 照片）
+//
+// 个人信息取自个人信息页 HTML（服务端直出文本）；照片先取首页用户信息
+// 拿到 xh_id 再拉 JPEG。照片拉不到只显示占位头像，不影响信息展示。
+
+struct GXVNUProfileView: View {
+    @Environment(AppState.self) private var appState
+
+    @State private var profile: GXVNUProfile? = nil
+    @State private var photoData: Data? = nil
+    @State private var isLoading = false
+    @State private var errorMessage: String? = nil
+
+    var body: some View {
+        ZStack {
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
+            if isLoading && profile == nil {
+                ProgressView("正在拉取个人信息…")
+            } else if let errorMessage, profile == nil {
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                    Text(errorMessage)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Button("重新拉取") { Task { await load() } }
+                }
+            } else if let profile {
+                List {
+                    Section {
+                        HStack(spacing: 16) {
+                            if let photoData, let uiImage = UIImage(data: photoData) {
+                                Image(uiImage: uiImage)
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(width: 72, height: 72)
+                                    .clipShape(Circle())
+                            } else {
+                                Image(systemName: "person.circle.fill")
+                                    .font(.system(size: 72))
+                                    .foregroundStyle(.secondary)
+                            }
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(appState.studentName.isEmpty ? "你好" : appState.studentName)
+                                    .font(.title3)
+                                    .fontWeight(.bold)
+                                Text(appState.school.displayName)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+                                if !appState.studentId.isEmpty {
+                                    Text(appState.studentId)
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+
+                    Section("学籍") {
+                        profileRow(label: "年级", value: profile.grade)
+                        profileRow(label: "学院", value: profile.college)
+                        profileRow(label: "专业", value: profile.major)
+                        profileRow(label: "班级", value: profile.className)
+                        profileRow(label: "学制", value: profile.duration.isEmpty ? "" : "\(profile.duration) 年")
+                        profileRow(label: "学籍状态", value: profile.status)
+                        profileRow(label: "报到注册", value: profile.enrollStatus)
+                        profileRow(label: "培养层次", value: profile.level)
+                        profileRow(label: "学生类别", value: profile.category)
+                    }
+                }
+                .listStyle(.insetGrouped)
+                .refreshable { await load() }
+            }
+        }
+        .navigationTitle("个人信息")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await load() }
+    }
+
+    private func profileRow(label: String, value: String) -> some View {
+        HStack {
+            Text(label)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text(value.isEmpty ? "—" : value)
+        }
+    }
+
+    private func load() async {
+        guard !isLoading else { return }
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            profile = try await GXVNUService.fetchProfile()
+            errorMessage = nil
+            // 照片单独拉，失败不影响信息展示。
+            if let data = try? await GXVNUService.fetchProfilePhoto() {
+                photoData = data
+            }
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? "拉取失败，请稍后重试"
+        }
+    }
+}
+
+// MARK: - 学籍预警（build 50）：风险课程与预警学分（xjyj）
+//
+// 空列表 = 没有预警（好事），显示绿色对勾而不是“暂无数据”。
+
+struct GXVNUWarningView: View {
+    @State private var warnings: [GXVNUWarning] = []
+    @State private var isLoading = false
+    @State private var errorMessage: String? = nil
+
+    var body: some View {
+        ZStack {
+            Color(.systemGroupedBackground)
+                .ignoresSafeArea()
+            if isLoading && warnings.isEmpty {
+                ProgressView("正在拉取学籍预警…")
+            } else if let errorMessage, warnings.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                    Text(errorMessage)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Button("重新拉取") { Task { await load() } }
+                }
+            } else if warnings.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.largeTitle)
+                        .foregroundStyle(.green)
+                    Text("暂无学籍预警")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Text("没有风险课程，继续保持")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                List($warnings, id: \.id) { $warning in
+                    let w = $warning.wrappedValue
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text(w.term.isEmpty ? "学籍预警" : w.term)
+                                .font(.headline)
+                            Spacer()
+                            if !w.warningCredits.isEmpty {
+                                Text("预警学分 \(w.warningCredits)")
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(.orange)
+                            }
+                        }
+                        Text("风险课程")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ForEach(w.courses, id: \.self) { course in
+                            HStack(spacing: 6) {
+                                Image(systemName: "exclamationmark.circle.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                                Text(course)
+                                    .font(.subheadline)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                .listStyle(.insetGrouped)
+                .refreshable { await load() }
+            }
+        }
+        .navigationTitle("学籍预警")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await load() }
+    }
+
+    private func load() async {
+        guard !isLoading else { return }
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            let ids = try await GXVNUService.resolveAcademicIDs()
+            warnings = try await GXVNUService.fetchAcademicWarning(ids: ids)
+            errorMessage = nil
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? "拉取失败，请稍后重试"
+        }
     }
 }
