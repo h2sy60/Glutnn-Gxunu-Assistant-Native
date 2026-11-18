@@ -8,6 +8,7 @@ import UIKit // 仅用于把验证码图片 Data 解成 UIImage 再交给 SwiftU
 
 struct LoginView: View {
     @Environment(AppState.self) private var appState
+    @Environment(\.dismiss) private var dismiss
 
     /// 玻璃输入框容器（图标 + 内容），和 Flutter 的玻璃框一个意思。
     private func glassField<Content: View>(icon: String, @ViewBuilder content: () -> Content) -> some View {
@@ -30,12 +31,22 @@ struct LoginView: View {
 
                 ScrollView {
                     VStack(spacing: 20) {
-                        // 学校名（44pt 白字 + 阴影，和 Flutter 登录页标题一致）
-                        Text(appState.school.displayName)
-                            .font(.system(size: 44, weight: .heavy))
-                            .foregroundStyle(.white)
-                            .shadow(color: .black.opacity(0.4), radius: 8, x: 0, y: 2)
-                            .padding(.top, 60)
+                        // 学校名（44pt 白字 + 阴影）+ 右上角关闭钮（旧版登录页同款：点 X 回首页，不用登录也能看）。
+                        HStack(alignment: .center) {
+                            Text(appState.school.displayName)
+                                .font(.system(size: 44, weight: .heavy))
+                                .foregroundStyle(.white)
+                                .shadow(color: .black.opacity(0.4), radius: 8, x: 0, y: 2)
+                            Spacer()
+                            Button { dismiss() } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 22, weight: .semibold))
+                                    .foregroundStyle(.white)
+                                    .padding(10)
+                            }
+                            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 22))
+                        }
+                        .padding(.top, 60)
 
                         // 状态提示行（登录失败/提示文案，白字 + 阴影）
                         if let error = appState.loginError, !error.isEmpty {
@@ -169,6 +180,10 @@ struct LoginView: View {
             if appState.school.captchaRequired && appState.captchaImageData == nil {
                 await appState.fetchCaptcha()
             }
+        }
+        .onChange(of: appState.isLoggedIn) { _, loggedIn in
+            // 登录成功就关掉本页回首页（旧版登录成功后 pushAndRemoveUntil 回 Layout）。
+            if loggedIn { dismiss() }
         }
     }
 }
