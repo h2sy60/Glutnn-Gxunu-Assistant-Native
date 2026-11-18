@@ -146,7 +146,11 @@ struct CaptchaDialogView: View {
                 .padding(.top, 12)
                 .padding(.bottom, 16)
             }
-            .background(Color.white, in: RoundedRectangle(cornerRadius: 26))
+            // 原生液态玻璃（build 38：原来是纯白 Color.white，Russell 2026-11-18
+            // 13:30 问为什么重构了还不用原生液态玻璃——build 31 照 Flutter 原版
+            // 白卡抄的，提示条在 build 33/34 换了玻璃，弹窗漏了。改成和提示条
+            // 同款 .regular + 白 tint 0.35，黑字照样可读，壁纸透出来）。
+            .glassEffect(.regular.tint(.white.opacity(0.35)), in: RoundedRectangle(cornerRadius: 26))
             .padding(.horizontal, 32)
         }
         .onAppear { captchaFocused = true }
