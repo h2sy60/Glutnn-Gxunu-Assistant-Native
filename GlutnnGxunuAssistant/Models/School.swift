@@ -96,8 +96,8 @@ func schoolById(_ id: SchoolID) -> SchoolConfig {
 // MARK: - 课程模型（两校共用）
 
 /// 一门课的一次上课（某星期某节次）。同一门课在不同周/节次会展开成多条。
-struct Course: Identifiable, Equatable {
-    let id = UUID()
+struct Course: Identifiable, Equatable, Codable {
+    var id = UUID()
     let name: String
     let teacher: String
     let location: String

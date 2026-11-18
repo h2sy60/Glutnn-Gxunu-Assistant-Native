@@ -6,6 +6,7 @@ struct HomeView: View {
     @Environment(AppState.self) private var appState
     @Binding var selectedTab: Int
     @State private var showExamsAlert = false
+    @State private var showScores = false
 
     /// 今天星期几（1=星期一 … 7=星期日）。
     private var todayWeekday: Int {
@@ -152,7 +153,13 @@ struct HomeView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
+            ZStack {
+                // 壁纸打底（和我的页、登录页同款放法）：TabView + NavigationStack 的底是不透明的，
+                // 只靠 WindowGroup 那层壁纸透不过来，首页就全黑。壁纸必须放在本页自己的 ZStack 底层。
+                WallpaperBackground()
+                    .ignoresSafeArea()
+
+                ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     // 问候（Flutter 问候语不带人名）
                     HStack(alignment: .center) {
@@ -205,28 +212,28 @@ struct HomeView: View {
                         .padding(.horizontal, 20)
                     }
 
-                    // 三个操作胶囊
+                    // 三个操作胶囊（旧版：未登录时点它们弹登录页，登录后才做事）
                     HStack(spacing: 12) {
                         actionChip(icon: "arrow.clockwise", label: "刷新") {
-                            Task { await appState.refreshSchedule() }
-                        }
-                        NavigationLink {
-                            ScoreView()
-                        } label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: "chart.bar.fill")
-                                    .font(.system(size: 20))
-                                    .foregroundStyle(.white)
-                                Text("成绩")
-                                    .font(.system(size: 15, weight: .semibold))
-                                    .foregroundStyle(.white)
+                            if !appState.isLoggedIn {
+                                appState.showLoginSheet = true
+                            } else {
+                                Task { await appState.refreshSchedule() }
                             }
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 14)
                         }
-                        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 20))
+                        actionChip(icon: "chart.bar.fill", label: "成绩") {
+                            if !appState.isLoggedIn {
+                                appState.showLoginSheet = true
+                            } else {
+                                showScores = true
+                            }
+                        }
                         actionChip(icon: "doc.text.fill", label: "考试") {
-                            showExamsAlert = true
+                            if !appState.isLoggedIn {
+                                appState.showLoginSheet = true
+                            } else {
+                                showExamsAlert = true
+                            }
                         }
                     }
                     .padding(.top, 16)
@@ -282,19 +289,40 @@ struct HomeView: View {
                         .padding(.horizontal, 20)
                     }
 
+                    // 未登录提示（旧版 _LoginTip 同款）：点一下进登录页，不拦着看首页。
+                    if !appState.isLoggedIn {
+                        Button {
+                            appState.showLoginSheet = true
+                        } label: {
+                            Text("请先登录")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(.white)
+                        }
+                        .padding(.top, 24)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                    }
+
                     // 底部留白：内容别滑到悬浮玻璃导航栏下面去。
                     Spacer().frame(height: 140)
                 }
             }
             .refreshable {
-                await appState.refreshSchedule()
+                if !appState.isLoggedIn {
+                    appState.showLoginSheet = true
+                } else {
+                    await appState.refreshSchedule()
+                }
             }
             .toolbar(.hidden, for: .navigationBar)
             .alert("考试功能即将上线", isPresented: $showExamsAlert) {
                 Button("知道了", role: .cancel) {}
             }
+            .navigationDestination(isPresented: $showScores) {
+                ScoreView()
+            }
         }
     }
+}
 }
 
 #Preview {
