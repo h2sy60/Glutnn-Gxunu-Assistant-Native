@@ -39,6 +39,12 @@
 			</dict>
 		</dict>
 	</dict>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>导出课表需要访问日历，以便把课程写入系统日历并设置上课提醒。</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>导出课表需要访问日历，以便把课程写入系统日历并设置上课提醒。</string>
+	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
+	<string>导出课表需要写入日历，以便把课程写入系统日历并设置上课提醒。</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

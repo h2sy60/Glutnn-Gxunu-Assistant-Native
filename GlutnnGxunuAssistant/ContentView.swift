@@ -191,10 +191,11 @@ struct ToastPill: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
         }
-        .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 25))
-        // 原版提示条永远是浅色玻璃 + 深色字（哪怕在深色壁纸首页上也是）；
-        // 整 App 强制深色模式会让它变成深色玻璃，深色字就看不清了。
-        .preferredColorScheme(.light)
+        .glassEffect(.regular.tint(.white.opacity(0.75)), in: RoundedRectangle(cornerRadius: 25))
+        // 原版提示条永远是浅色玻璃 + 深色字（哪怕在深色壁纸首页上也是）。
+        // 玻璃材质只认窗口 trait，不认 .preferredColorScheme（build 33 实测：
+        // 首页窗口是深色，光加 .preferredColorScheme(.light) 玻璃还是深灰，
+        // 黑字就看不清了）。所以直接给玻璃加白 tint，强制白色玻璃，黑字可读。
     }
 }
 
