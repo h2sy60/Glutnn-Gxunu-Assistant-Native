@@ -4,9 +4,13 @@ import SwiftUI
 /// 放在 WindowGroup 层（TabView 之上），铺满到屏幕边缘；各页内容仍留在安全区内。
 /// build 63 首页设置可换壁纸：0=校园黄昏照片（默认），1=深蓝渐变，2=墨绿渐变，3=纯黑。
 /// build 69：4=自定义照片（相册选图，存 Documents/custom-wallpaper.jpg；没存过退回校园黄昏）。
+/// build 71：自定义壁纸版本号——每次存新图 +1，强制所有 WallpaperBackground
+/// 重读文件。wallpaper 已经是 4 时再选新图，Int 不变不会触发重绘，旧图就
+/// 一直挂着（主页换了、我的页没换；Russell 2026-11-19 11:04 截图）。
 /// 用 @AppStorage 读同一个键，设置页一改这里立即重绘。
 struct WallpaperBackground: View {
     @AppStorage("Wallpaper") private var wallpaper = 0
+    @AppStorage("CustomWallpaperVersion") private var customWallpaperVersion = 0
 
     /// 默认照片壁纸（校园黄昏）。自定义图没存过时也退回它。
     private var defaultPhotoBackground: some View {
@@ -46,6 +50,8 @@ struct WallpaperBackground: View {
                     Image(uiImage: uiImage)
                         .resizable()
                         .scaledToFill()
+                        // 版本号一变就重建这张图，不再挂旧图（build 71）。
+                        .id(customWallpaperVersion)
                         .ignoresSafeArea()
                 } else {
                     defaultPhotoBackground
