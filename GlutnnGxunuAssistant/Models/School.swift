@@ -545,3 +545,25 @@ let wallpaperBase64 = """
 func wallpaperImageData() -> Data? {
     Data(base64Encoded: wallpaperBase64, options: .ignoreUnknownCharacters)
 }
+
+/// 自定义壁纸文件（Documents/custom-wallpaper.jpg；UserDefaults 放不下大图）。
+/// build 69：Russell 要从相册选壁纸（首页设置 → 壁纸 → 自定义照片）。
+var customWallpaperURL: URL {
+    FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("custom-wallpaper.jpg")
+}
+
+/// 存自定义壁纸（相册选图后调）。存失败静默忽略，调用方读不到就退回默认壁纸。
+func saveCustomWallpaper(_ data: Data) {
+    try? data.write(to: customWallpaperURL)
+}
+
+/// 读自定义壁纸。没存过返回 nil。
+func customWallpaperData() -> Data? {
+    try? Data(contentsOf: customWallpaperURL)
+}
+
+/// 是否已存自定义壁纸。
+func hasCustomWallpaper() -> Bool {
+    FileManager.default.fileExists(atPath: customWallpaperURL.path)
+}
