@@ -27,12 +27,12 @@ enum GUTService {
         }
     }
 
-    // MARK: - 验证码预检（旧项目同款，build 68 补回）
+    // MARK: - 验证码预检（旧项目同款，build 67 补回）
 
     /// 验证码预检：旧项目 login.dart checkCaptcha + dialog.dart showCaptchaDialog
     /// 都是先调它，通过了才真正登录。POST /academic/checkCaptcha.do，
     /// captchaCode 同时放 URL 参数和 body（旧项目写法），正文 "true" 才算对。
-    /// build 68：Russell 2026-11-19 10:03 让对照旧项目——原生版之前跳过这
+    /// build 67：Russell 2026-11-19 10:03 让对照旧项目——原生版之前跳过这
     /// 一步、直接拿验证码去登录 POST，与旧项目流程不一致，补回。
     static func checkCaptcha(_ code: String) async -> Bool {
         guard let url = school.url("/academic/checkCaptcha.do", query: ["captchaCode": code]) else { return false }
@@ -55,7 +55,7 @@ enum GUTService {
         guard let url = school.url("/academic/j_acegi_security_check") else {
             return .failure("地址无效")
         }
-        // build 68：先预检验证码（旧项目流程）。验证码不对直接失败，不发登录
+        // build 67：先预检验证码（旧项目流程）。验证码不对直接失败，不发登录
         // 请求；旧项目 login.dart checking() / dialog.dart check() 都是
         // 先 checkCaptcha、通过了才调 login()。
         if !captcha.isEmpty {
@@ -72,13 +72,24 @@ enum GUTService {
                 "j_captcha": captcha,
             ]
             let (data, response) = try await client.postForm(url, form: form)
-            // 成功：302 跳到 /academic/index_new.jsp（Location 头）。
+            // 成功：302 跳到教务内页（Location 头）。
             // 302 不会自动跟随（NetworkClient 关了重定向），直接读头。
             // build 43：Location 用 contains 不用 ==（专家意见）——不同网关
             // 或首次无 Cookie 时，Tomcat 可能返回完整 URL 或带 ;jsessionid=
             // 后缀，== 会把真成功误判为失败。
+            // build 68：放宽成功判定——旧项目只认 /academic/index_new.jsp，
+            // 但会话过期后重新验证时，Spring Security 会把登录重定向回过期
+            // 前正在访问的页面（saved request，如 currcourse.jsdo），那也是
+            // 成功。Russell 2026-11-19 10:12 日志证实：checkCaptcha 已 ok、
+            // 凭证无误，登录 POST 回 302 到 currcourse.jsdo，却被旧判定误
+            // 报失败。失败只会跳回登录页（login/affairLogin）或回 200 重新
+            // 显示登录表单，所以反过来判：302 且 Location 不是登录页即成功。
             let location = response.value(forHTTPHeaderField: "Location") ?? ""
-            if location.contains("/academic/index_new.jsp") {
+            let lowerLocation = location.lowercased()
+            let isLoginPage = lowerLocation.contains("login") || lowerLocation.contains("affairlogin")
+            if (response.statusCode == 301 || response.statusCode == 302),
+               !location.isEmpty,
+               !isLoginPage {
                 AppLogger.shared.log("GUT login success")
                 return .success
             }
