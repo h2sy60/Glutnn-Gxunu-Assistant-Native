@@ -7,28 +7,28 @@ import SwiftUI
 /// build 71：自定义壁纸版本号——每次存新图 +1，强制所有 WallpaperBackground
 /// 重读文件。wallpaper 已经是 4 时再选新图，Int 不变不会触发重绘，旧图就
 /// 一直挂着（主页换了、我的页没换；Russell 2026-11-19 11:04 截图）。
-/// build 78（专家方案，修正后）：状态收口到 AppState（@Observable），不再用
-/// 各页零散的 @AppStorage；删掉写死的 UIScreen.main.bounds frame——之前写死
-/// 932pt 高度 + .ignoresSafeArea()，build 77 底栏浮起来后安全区上下不对称，
-/// 壁纸被顶上去 20pt，底部空出黑边。改用 Color.clear 弹性底板 + .overlay，
-/// 照片/渐变放 overlay 里 .scaledToFill() 再 .clipped()，宽版/横版照片绝不
-/// 会把父视图顶偏（build 70 的教训）；.id("壁纸-版本") 让切换任意壁纸或换
-/// 自定义图时立刻重建。深色遮罩保持原来的四段渐变，不简化。
+/// build 79：删掉 @Environment(AppState.self)——build 78 的启动闪退就是它。
+/// 崩溃报告（2026-11-19 16:02:31，build 78，启动后 0.18 秒）：EXC_BREAKPOINT，
+/// 崩溃帧 EnvironmentValues.subscript.getter → _assertionFailure。
+/// SwiftUI 在更新 @Environment 属性时，不管 body 用不用它，都会先去环境里
+/// 取值，取不到就直接断言崩。WindowGroup 的 .background() 里挂的
+/// WallpaperBackground 拿不到 AppState（.environment() 透不进 background），
+/// 一点开 app 就崩。build 77 用 @AppStorage 没这个问题，build 78 换成
+/// @Environment 才崩的。
+/// 修法：壁纸彻底不要环境，全部显式传参。四个调用点都传
+/// appState.wallpaper / appState.customWallpaperVersion，AppState 一变父视图
+/// 重算、壁纸跟着重建，换壁纸照样立即生效。
 struct WallpaperBackground: View {
-    @Environment(AppState.self) private var appState
+    private let wallpaper: Int
+    private let customVersion: Int
 
-    // WindowGroup 显式传参（appState.wallpaper 一变，WindowGroup 重算，
-    // background 跟着重建，换壁纸必刷新）；各 Tab 页无参调用，走 @Environment。
-    private let overrideWallpaper: Int?
-    private let overrideVersion: Int?
-
-    init(wallpaper: Int? = nil, customVersion: Int? = nil) {
-        self.overrideWallpaper = wallpaper
-        self.overrideVersion = customVersion
+    init(wallpaper: Int, customVersion: Int) {
+        self.wallpaper = wallpaper
+        self.customVersion = customVersion
     }
 
-    private var currentWallpaper: Int { overrideWallpaper ?? appState.wallpaper }
-    private var currentVersion: Int { overrideVersion ?? appState.customWallpaperVersion }
+    private var currentWallpaper: Int { wallpaper }
+    private var currentVersion: Int { customVersion }
 
     /// 默认照片壁纸（校园黄昏）。自定义图没存过时也退回它。
     private var defaultPhotoBackground: some View {
