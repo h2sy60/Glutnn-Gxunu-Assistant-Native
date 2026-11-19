@@ -89,11 +89,14 @@ struct GlutnnGxunuAssistantApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ZStack {
-                WallpaperBackground()
-                ContentView()
-                    .environment(appState)
-            }
+            ContentView()
+                .environment(appState)
+                // 壁纸放 .background 而不是 ZStack 兄弟（build 77）：ZStack 里
+                // WallpaperBackground 的 ignoresSafeArea + UIScreen 全屏 frame
+                // 会把底栏的安全区吃掉，系统底栏就沉到底、碰到小横条
+                // （Russell 2026-11-19 15:14 截图，MeowX 那样是浮在小横条上方留空）；
+                // 放 background 里底栏安全区正常，系统底栏恢复浮在小横条上方。
+                .background(WallpaperBackground())
             // 窗口级亮/暗模式跟着当前 Tab 走：课表是白底页，窗口切亮色，
             // 系统底栏（UITabBar，只认窗口 trait）就变浅色玻璃；
             // 首页/我的切回深色，白字才看得见。
