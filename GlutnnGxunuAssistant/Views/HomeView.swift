@@ -123,13 +123,17 @@ struct HomeView: View {
 
     private func startTime(of section: Int) -> (Int, Int) {
         // build 60：用生效时间（时间管理改过就用自定义，否则学校默认作息）。
+        // build 72：读一下作息版本号——时间管理每存一次它就 +1，首页跟着重绘、
+        // 立刻显示新时间（之前只写文件不通知，时间要等刷新/切周/重启才变）。
+        let _ = appState.sectionTimesVersion
         let list = appState.school.effectiveStartTimeList
         guard section >= 1, section <= list.count else { return (0, 0) }
         return list[section - 1]
     }
 
     private func endTime(of section: Int) -> (Int, Int) {
-        // build 60：同上。
+        // build 60：同上。build 72：同上，读版本号建立依赖。
+        let _ = appState.sectionTimesVersion
         let list = appState.school.effectiveEndTimeList
         guard section >= 1, section <= list.count else { return (0, 0) }
         return list[section - 1]
