@@ -178,6 +178,11 @@ struct HomeView: View {
     /// 某行右边显示的状态文案（原版 lists.dart 同款规则）：
     /// 上一行的文案里有“后”（正在倒计时），这一行就不显示，免得满屏都是倒计时。
     private func statusTextForRow(at index: Int, in sections: [DaySection]) -> String {
+        // build 74：越界保护——切学校时 todaySections 会重算，ForEach 枚举的
+        // 快照和这里传进来的数组可能不一致，下标越界会直接 trap 闪退
+        // （2026-11-19 崩溃报告：HomeView.statusTextForRow，EXC_BREAKPOINT）。
+        // 越界就返回空文案，绝不闪退。
+        guard index >= 0, index < sections.count else { return "" }
         let (text, _) = sectionStatus(section: sections[index].section)
         if index > 0 {
             let (prevText, _) = sectionStatus(section: sections[index - 1].section)
@@ -357,6 +362,12 @@ struct HomeView: View {
     /// 不然老是请求）。旧版 layout.dart 的 resumed 自动刷新已删；刷新只走
     /// 首页“刷新”胶囊和下拉刷新，都是手动。
     var body: some View {
+        // build 74：todaySections / tomorrowSections 是计算属性，每次访问都
+        // 重算。切学校时课表变了，body 里 ForEach 枚举的快照和行里重算的
+        // 会不一致，下标越界闪退（崩溃报告 HomeView.statusTextForRow）。
+        // 在 body 开头各算一次快照，整次渲染全用同一份。
+        let today = todaySections
+        let tomorrow = tomorrowSections
         NavigationStack {
             ZStack {
                 // 壁纸打底（和我的页、登录页同款放法）：TabView + NavigationStack 的底是不透明的，
@@ -524,7 +535,7 @@ struct HomeView: View {
                         .padding(.top, 24)
                         .padding(.horizontal, 20)
 
-                    if todaySections.isEmpty {
+                    if today.isEmpty {
                         Text("今天没有课")
                             .font(.system(size: 15))
                             .foregroundStyle(.white.opacity(0.7))
@@ -532,9 +543,9 @@ struct HomeView: View {
                             .padding(.horizontal, 20)
                     } else {
                         VStack(spacing: 0) {
-                            ForEach(Array(todaySections.enumerated()), id: \.element.id) { index, daySection in
-                                sectionRow(daySection, statusText: statusTextForRow(at: index, in: todaySections))
-                                if daySection.id != todaySections.last?.id {
+                            ForEach(Array(today.enumerated()), id: \.element.id) { index, daySection in
+                                sectionRow(daySection, statusText: statusTextForRow(at: index, in: today))
+                                if daySection.id != today.last?.id {
                                     Divider().background(Color.white.opacity(0.15))
                                 }
                             }
@@ -550,7 +561,7 @@ struct HomeView: View {
                             .padding(.top, 20)
                             .padding(.horizontal, 20)
 
-                        if tomorrowSections.isEmpty {
+                        if tomorrow.isEmpty {
                             Text("明天没有课")
                                 .font(.system(size: 15))
                                 .foregroundStyle(.white.opacity(0.7))
@@ -558,9 +569,9 @@ struct HomeView: View {
                                 .padding(.horizontal, 20)
                         } else {
                             VStack(spacing: 0) {
-                                ForEach(tomorrowSections) { daySection in
+                                ForEach(tomorrow) { daySection in
                                 sectionRow(daySection, statusText: "", dayOffset: 1)
-                                if daySection.id != tomorrowSections.last?.id {
+                                if daySection.id != tomorrow.last?.id {
                                     Divider().background(Color.white.opacity(0.15))
                                 }
                             }
