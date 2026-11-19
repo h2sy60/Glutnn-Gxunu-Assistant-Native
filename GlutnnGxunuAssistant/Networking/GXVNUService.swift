@@ -22,6 +22,16 @@ enum GXVNUService {
     /// 课表响应里顺带取到的学生姓名（xsxx.XM），供 AppState 显示。
     nonisolated(unsafe) static var lastStudentName: String?
 
+    /// 取验证码图那次登录页的 csrftoken / mmsfjm / JSESSIONID。
+    /// 验证码跟取图时的会话绑定；登录 POST 必须用同一个会话的 csrftoken，
+    /// 否则服务端认不出验证码（用户明明输对了也会被判错）。
+    /// build 66：有验证码时复用这三个值，不再先 GET 登录页——那次 GET
+    /// 可能轮换 JSESSIONID，让验证码作废（点了“继续”却永远提示重新输入，
+    /// Russell 2026-11-19 09:14 报的 bug）。取图时存，登录时复用。
+    nonisolated(unsafe) static var captchaCsrfToken: String?
+    nonisolated(unsafe) static var captchaMmsfjm: String?
+    nonisolated(unsafe) static var captchaSessionId: String?
+
     /// 模拟 iPhone Safari 的 UA（Flutter 版实测：Dart 默认 UA 会被
     /// 正方当成非浏览器请求、轮换会话）。
     private static let safariUA =
@@ -101,8 +111,13 @@ enum GXVNUService {
     // MARK: - 验证码
 
     /// GET 验证码图（先拿登录页刷新会话，再取图）。
+    /// 顺手把这次登录页的 csrftoken / mmsfjm / JSESSIONID 存下来，
+    /// 登录时有验证码就直接复用（build 66，见上面注释）。
     static func fetchCaptchaImage() async -> Data? {
-        _ = await getLoginPage()
+        let loginHtml = await getLoginPage()
+        captchaCsrfToken = extract(loginHtml, pattern: #"name="csrftoken"[^>]*value="([^"]+)""#)
+        captchaMmsfjm = extract(loginHtml, pattern: #"name="mmsfjm"[^>]*value="([^"]+)""#)
+        captchaSessionId = client.cookies.value("JSESSIONID", host: school.host)
         let time = Date().millisecondsSinceEpoch
         guard let url = school.url("/kaptcha", query: ["time": "\(time)"]) else { return nil }
         do {
@@ -130,19 +145,35 @@ enum GXVNUService {
     /// 登录。captcha 为用户输入的验证码（默认不要，按服务器要求）。
     static func login(studentId: String, password: String, captcha: String) async -> LoginOutcome {
         // 验证码和 csrftoken 都跟会话绑定，不要在两次尝试之间清会话。
-        var loginHtml = await getLoginPage()
-        var csrftoken = extract(loginHtml, pattern: #"name="csrftoken"[^>]*value="([^"]+)""#)
+        // build 66：用户已输验证码时，复用取图那次的 csrftoken / mmsfjm / 会话，
+        // 不再先 GET 登录页——那次 GET 可能轮换 JSESSIONID，让验证码作废
+        // （点了“继续”却永远提示重新输入，Russell 2026-11-19 09:14 报的 bug）。
+        var loginHtml = ""
+        var csrftoken: String?
         var sessionRefreshed = false
-        if csrftoken == nil || csrftoken!.isEmpty {
-            // 登录页没给 csrftoken：旧会话已失效。清掉、重新拿一次全新登录页。
-            clearSession()
+        var reusedCaptchaSession = false
+        if !captcha.isEmpty,
+           let savedToken = captchaCsrfToken, !savedToken.isEmpty,
+           let savedSession = captchaSessionId,
+           client.cookies.value("JSESSIONID", host: school.host) == savedSession {
+            // 取图时的会话还在：直接用它的 csrftoken。
+            csrftoken = savedToken
+            reusedCaptchaSession = true
+        } else {
             loginHtml = await getLoginPage()
             csrftoken = extract(loginHtml, pattern: #"name="csrftoken"[^>]*value="([^"]+)""#)
-            guard let token = csrftoken, !token.isEmpty else { return .failure("登录页异常，请重试") }
-            sessionRefreshed = true
+            if csrftoken == nil || csrftoken!.isEmpty {
+                // 登录页没给 csrftoken：旧会话已失效。清掉、重新拿一次全新登录页。
+                clearSession()
+                loginHtml = await getLoginPage()
+                csrftoken = extract(loginHtml, pattern: #"name="csrftoken"[^>]*value="([^"]+)""#)
+                guard let token = csrftoken, !token.isEmpty else { return .failure("登录页异常，请重试") }
+                sessionRefreshed = true
+            }
         }
         if sessionRefreshed && !captcha.isEmpty {
             // 会话被换过：用户输的验证码是对着旧会话取的，已作废。
+            AppLogger.shared.log("GXVNU login captcha discarded: session refreshed before POST")
             return .captchaRequired
         }
         // 静默登录（captcha 为空）时先读 dlsfbxyzm 标志：若当前 JSESSIONID
@@ -161,7 +192,14 @@ enum GXVNUService {
             }
         }
         // mmsfjm=1 表示密码要加密；=0 则明文提交。
-        var mmsfjm = extract(loginHtml, pattern: #"name="mmsfjm"[^>]*value="([^"]+)""#) ?? "1"
+        // 复用取图时会话的：用取图时存的 mmsfjm（没重新 GET 登录页）。
+        // var：公钥轮换会话重拿登录页时要再赋值。
+        var mmsfjm: String
+        if reusedCaptchaSession, let savedMmsfjm = captchaMmsfjm, !savedMmsfjm.isEmpty {
+            mmsfjm = savedMmsfjm
+        } else {
+            mmsfjm = extract(loginHtml, pattern: #"name="mmsfjm"[^>]*value="([^"]+)""#) ?? "1"
+        }
 
         // 拿 RSA 公钥并加密密码（1024 位，PKCS#1 v1.5）。
         // 公钥存在服务端当前 HttpSession 里：若 GET 公钥轮换了 JSESSIONID，
@@ -200,7 +238,11 @@ enum GXVNUService {
             csrftoken = extract(retryHtml, pattern: #"name="csrftoken"[^>]*value="([^"]+)""#)
             guard let token = csrftoken, !token.isEmpty else { return .failure("登录页异常，请重试") }
             mmsfjm = extract(retryHtml, pattern: #"name="mmsfjm"[^>]*value="([^"]+)""#) ?? "1"
-            if !captcha.isEmpty { return .captchaRequired }
+            if !captcha.isEmpty {
+                // 公钥那次 GET 轮换了会话：用户输的验证码作废，换张图重输。
+                AppLogger.shared.log("GXVNU login captcha discarded: public-key fetch rotated session")
+                return .captchaRequired
+            }
         }
         guard keyFetchOK, let keyData else { return .failure("获取公钥失败") }
         guard let keyJson = try? JSONSerialization.jsonObject(with: keyData) as? [String: Any],

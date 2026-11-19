@@ -854,6 +854,10 @@ final class AppState {
                 showLoginSheet = true
             }
         case .captchaRequired:
+            // 验证码被服务端拒了（输错，或会话换了导致作废）：记一条，
+            // 再换一张图让用户重输。日志里能看到是 200 拒还是会话作废
+            // （GXVNUService 那边记了具体原因）。
+            AppLogger.shared.log("reverify \(school.id) captchaRequired: new image fetched")
             showToast(.error, "请输入验证码", duration: 2)
             await fetchCaptcha()
         }
