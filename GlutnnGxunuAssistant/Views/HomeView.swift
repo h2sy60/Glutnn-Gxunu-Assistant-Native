@@ -372,7 +372,8 @@ struct HomeView: View {
             ZStack {
                 // 壁纸打底（和我的页、登录页同款放法）：TabView + NavigationStack 的底是不透明的，
                 // 只靠 WindowGroup 那层壁纸透不过来，首页就全黑。壁纸必须放在本页自己的 ZStack 底层。
-                WallpaperBackground()
+                // build 79：显式传参（壁纸不要 @Environment，build 78 启动闪退就是它）。
+                WallpaperBackground(wallpaper: appState.wallpaper, customVersion: appState.customWallpaperVersion)
                     .ignoresSafeArea()
 
                 ScrollView {
