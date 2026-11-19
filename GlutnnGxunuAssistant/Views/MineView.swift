@@ -2,6 +2,7 @@ import SwiftUI
 import UIKit // 仅用于把学生照片 Data 解成 UIImage 再交给 SwiftUI Image 显示。
 import PDFKit // 培养方案 PDF 展示（build 53）。
 import UniformTypeIdentifiers // 备份导入的 .json 文件类型（build 63）。
+import PhotosUI // 首页设置自定义壁纸：从相册选图（build 69）。
 
 /// 我的（Flutter 版形态）：壁纸 + 玻璃卡片。
 struct MineView: View {
@@ -471,28 +472,35 @@ struct ReminderSettingsView: View {
     }
 }
 
-// MARK: - 首页设置（build 63）
+// MARK: - 首页设置（build 63；build 69：壁纸打勾 + 自定义照片）
 
 /// 首页显示开关 + 壁纸。改完回首页立即生效。
+/// build 69：Picker/开关直接绑 @AppStorage，不再经 AppSettings 手写 Binding——
+/// AppSettings 不是 Observable，写完 UserDefaults 不通知视图重绘，Picker 的
+/// 打勾就停在旧选项上（点了深蓝渐变样式变了、勾还留在校园黄昏；Russell
+/// 2026-11-19 10:32 截图）。@AppStorage 自己监听，值一变视图就重绘，勾就跟上。
+/// 自定义照片：Picker 里多一项“自定义照片”（tag 4）；没存过图时点它先开相册，
+/// 选到图存 Documents/custom-wallpaper.jpg 再切到 4，取消不切（Russell 问
+/// “点壁纸没反应，难道不是应该从相册选吗”——以前“壁纸”那行只是 Picker 的
+/// label，本来就点不动）。已存过自定义图时，点“自定义照片”直接切过去；
+/// 要换图点下面的“更换自定义照片”。
 struct HomeSettingsView: View {
+    @AppStorage("ShowRecentExams") private var showRecentExams = true
+    @AppStorage("ShowTomorrowCourses") private var showTomorrowCourses = true
+    @AppStorage("ShowGreeting") private var showGreeting = true
+    @AppStorage("Wallpaper") private var wallpaper = 0
+    @State private var showingPhotoPicker = false
+    @State private var photoPickerItem: PhotosPickerItem?
+
     var body: some View {
         ZStack {
             Color(.systemGroupedBackground)
                 .ignoresSafeArea()
             List {
                 Section {
-                    Toggle("显示近期考试", isOn: Binding(
-                        get: { AppSettings.showRecentExams },
-                        set: { AppSettings.showRecentExams = $0 }
-                    ))
-                    Toggle("显示明日课程", isOn: Binding(
-                        get: { AppSettings.showTomorrowCourses },
-                        set: { AppSettings.showTomorrowCourses = $0 }
-                    ))
-                    Toggle("显示问候语", isOn: Binding(
-                        get: { AppSettings.showGreeting },
-                        set: { AppSettings.showGreeting = $0 }
-                    ))
+                    Toggle("显示近期考试", isOn: $showRecentExams)
+                    Toggle("显示明日课程", isOn: $showTomorrowCourses)
+                    Toggle("显示问候语", isOn: $showGreeting)
                 } header: {
                     Text("显示内容")
                 } footer: {
@@ -500,22 +508,51 @@ struct HomeSettingsView: View {
                 }
                 Section {
                     Picker("壁纸", selection: Binding(
-                        get: { AppSettings.wallpaper },
-                        set: { AppSettings.wallpaper = $0 }
+                        get: { wallpaper },
+                        set: { newValue in
+                            if newValue == 4 {
+                                if hasCustomWallpaper() {
+                                    // 已存过自定义图：直接切过去。
+                                    wallpaper = 4
+                                } else {
+                                    // 没存过：先开相册，选到图再切（取消不切）。
+                                    showingPhotoPicker = true
+                                }
+                            } else {
+                                wallpaper = newValue
+                            }
+                        }
                     )) {
                         Text("校园黄昏").tag(0)
                         Text("深蓝渐变").tag(1)
                         Text("墨绿渐变").tag(2)
                         Text("纯黑").tag(3)
+                        Text("自定义照片").tag(4)
                     }
                     .pickerStyle(.inline)
+                    if hasCustomWallpaper() {
+                        Button("更换自定义照片") {
+                            showingPhotoPicker = true
+                        }
+                    }
                 } header: {
                     Text("壁纸")
                 } footer: {
-                    Text("首页和我的页的背景。校园黄昏是原来的照片壁纸，其余是纯色渐变。")
+                    Text("首页和我的页的背景。校园黄昏是原来的照片壁纸，其余是纯色渐变；自定义照片从相册选。")
                 }
             }
             .listStyle(.insetGrouped)
+            .photosPicker(isPresented: $showingPhotoPicker, selection: $photoPickerItem, matching: .images)
+            .onChange(of: photoPickerItem) { _, new in
+                guard let item = new else { return }
+                Task {
+                    if let data = try? await item.loadTransferable(type: Data.self), !data.isEmpty {
+                        saveCustomWallpaper(data)
+                        wallpaper = 4
+                    }
+                    photoPickerItem = nil
+                }
+            }
         }
         .navigationTitle("首页设置")
         .navigationBarTitleDisplayMode(.inline)
