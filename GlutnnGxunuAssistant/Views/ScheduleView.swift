@@ -533,8 +533,12 @@ struct ScheduleGrid: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            // 横虚线（每节一条）+ 竖虚线（每天一条）：开“显示网格辅助线”才画。
-            if appearance.showGridGuides {
+            // 横虚线（每节一条）+ 竖虚线（每天一条）。
+            // build 69：关“显示网格辅助线”时只隐形、不从视图树里删掉。
+            // 之前用 if 删掉，ZStack 里只剩 offset 定位的子视图，TabView 页
+            // 居中时网格整体下坠、课表被顶到屏幕外（Russell 2026-11-19
+            // 10:32 截图）。用 opacity 开关，视图结构两边完全一致，就不坠了。
+            Group {
                 ForEach(0...school.sectionCount, id: \.self) { r in
                     Path { path in
                         path.move(to: CGPoint(x: 0, y: CGFloat(r) * rowHeight))
@@ -550,6 +554,7 @@ struct ScheduleGrid: View {
                     .stroke(Color.black.opacity(0.15), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
                 }
             }
+            .opacity(appearance.showGridGuides ? 1 : 0)
             // 左侧每节编号 + 开始时间 + 结束时间（Flutter _LeftGrid 同款）。
             // “节数栏显示时间”关了就只剩节次编号。
             ForEach(0..<school.sectionCount, id: \.self) { s in
