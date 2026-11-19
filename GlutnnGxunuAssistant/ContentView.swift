@@ -123,13 +123,14 @@ struct CaptchaDialogView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
-                .glassEffect(.regular.tint(.white.opacity(0.5)), in: RoundedRectangle(cornerRadius: 12))
+                .glassEffect(.clear.tint(.white.opacity(0.5)), in: RoundedRectangle(cornerRadius: 12))
                 .padding(.horizontal, 24)
                 .padding(.top, 16)
 
-                // 取消 / 继续（build 39 重设计）：两个等宽液态玻璃胶囊并排，
+                // 取消 / 继续（build 39 重设计，build 76 加高）：两个等宽液态玻璃胶囊并排，
                 // 不再是贴右的蓝色文字——之前“继续”贴右沿、快出弹窗了。
                 // 胶囊比弹窗底色略实（白 0.5 对 0.35），看得出是两个钮。
+                // build 76：按钮 44→52 高，好点；玻璃改 .clear，模糊降下来。
                 HStack(spacing: 12) {
                     Button("取消") {
                         if !appState.captchaChecking {
@@ -139,8 +140,8 @@ struct CaptchaDialogView: View {
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(.black)
                     .frame(maxWidth: .infinity)
-                    .frame(height: 44)
-                    .glassEffect(.regular.tint(.white.opacity(0.5)), in: Capsule())
+                    .frame(height: 52)
+                    .glassEffect(.clear.tint(.white.opacity(0.5)), in: Capsule())
 
                     Button(appState.captchaChecking ? "稍等..." : "继续") {
                         Task { await appState.confirmCaptchaDialog() }
@@ -148,19 +149,22 @@ struct CaptchaDialogView: View {
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(.blue)
                     .frame(maxWidth: .infinity)
-                    .frame(height: 44)
-                    .glassEffect(.regular.tint(.white.opacity(0.5)), in: Capsule())
+                    .frame(height: 52)
+                    .glassEffect(.clear.tint(.white.opacity(0.5)), in: Capsule())
                     .disabled(appState.captchaChecking)
                 }
                 .padding(.horizontal, 24)
                 .padding(.top, 16)
                 .padding(.bottom, 20)
             }
-            // 原生液态玻璃（build 38：原来是纯白 Color.white，Russell 2026-11-18
-            // 13:30 问为什么重构了还不用原生液态玻璃——build 31 照 Flutter 原版
-            // 白卡抄的，提示条在 build 33/34 换了玻璃，弹窗漏了。改成和提示条
-            // 同款 .regular + 白 tint 0.35，黑字照样可读，壁纸透出来）。
-            .glassEffect(.regular.tint(.white.opacity(0.35)), in: RoundedRectangle(cornerRadius: 26))
+            // 液态玻璃（build 38 用 .regular，build 76 改 .clear：Russell 2026-11-19
+            // 说 .regular 磨砂太重、模糊太高不喜欢，.clear 壁纸透出来、黑字照样可读）。
+            // 卡片自己接住点击（contentShape + 空 onTapGesture，build 76）：
+            // 点到卡片里的空白处不再漏到遮罩上关掉弹窗，只有真正点到卡片外面才关。
+            // 之前点确认稍偏一点就关弹窗，就是因为卡片没接住点击。
+            .glassEffect(.clear.tint(.white.opacity(0.5)), in: RoundedRectangle(cornerRadius: 26))
+            .contentShape(RoundedRectangle(cornerRadius: 26))
+            .onTapGesture { }
             .padding(.horizontal, 32)
         }
         .onAppear { captchaFocused = true }
