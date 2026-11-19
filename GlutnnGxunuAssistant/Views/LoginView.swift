@@ -38,7 +38,8 @@ struct LoginView: View {
         // 顶部只留 16pt：没有 ignoresSafeArea(.top)，内容自动在状态栏下方。
         GeometryReader { geo in
             ZStack(alignment: .top) {
-                WallpaperBackground()
+                // build 79：显式传参（壁纸不要 @Environment，build 78 启动闪退就是它）。
+                WallpaperBackground(wallpaper: appState.wallpaper, customVersion: appState.customWallpaperVersion)
                     .ignoresSafeArea()
                     .onTapGesture {
                         focusedField = nil
