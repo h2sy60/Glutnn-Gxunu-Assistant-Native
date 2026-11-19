@@ -530,6 +530,9 @@ struct HomeSettingsView: View {
                         Text("自定义照片").tag(4)
                     }
                     .pickerStyle(.inline)
+                    // build 70：Picker 的 label 行（“壁纸”）点不动，又跟 Section
+                    // 标题“壁纸”重复，藏掉（Russell 2026-11-19 10:51：可以删了）。
+                    .labelsHidden()
                     if hasCustomWallpaper() {
                         Button("更换自定义照片") {
                             showingPhotoPicker = true
