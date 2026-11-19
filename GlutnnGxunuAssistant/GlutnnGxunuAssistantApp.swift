@@ -7,10 +7,28 @@ import SwiftUI
 /// build 71：自定义壁纸版本号——每次存新图 +1，强制所有 WallpaperBackground
 /// 重读文件。wallpaper 已经是 4 时再选新图，Int 不变不会触发重绘，旧图就
 /// 一直挂着（主页换了、我的页没换；Russell 2026-11-19 11:04 截图）。
-/// 用 @AppStorage 读同一个键，设置页一改这里立即重绘。
+/// build 78（专家方案，修正后）：状态收口到 AppState（@Observable），不再用
+/// 各页零散的 @AppStorage；删掉写死的 UIScreen.main.bounds frame——之前写死
+/// 932pt 高度 + .ignoresSafeArea()，build 77 底栏浮起来后安全区上下不对称，
+/// 壁纸被顶上去 20pt，底部空出黑边。改用 Color.clear 弹性底板 + .overlay，
+/// 照片/渐变放 overlay 里 .scaledToFill() 再 .clipped()，宽版/横版照片绝不
+/// 会把父视图顶偏（build 70 的教训）；.id("壁纸-版本") 让切换任意壁纸或换
+/// 自定义图时立刻重建。深色遮罩保持原来的四段渐变，不简化。
 struct WallpaperBackground: View {
-    @AppStorage("Wallpaper") private var wallpaper = 0
-    @AppStorage("CustomWallpaperVersion") private var customWallpaperVersion = 0
+    @Environment(AppState.self) private var appState
+
+    // WindowGroup 显式传参（appState.wallpaper 一变，WindowGroup 重算，
+    // background 跟着重建，换壁纸必刷新）；各 Tab 页无参调用，走 @Environment。
+    private let overrideWallpaper: Int?
+    private let overrideVersion: Int?
+
+    init(wallpaper: Int? = nil, customVersion: Int? = nil) {
+        self.overrideWallpaper = wallpaper
+        self.overrideVersion = customVersion
+    }
+
+    private var currentWallpaper: Int { overrideWallpaper ?? appState.wallpaper }
+    private var currentVersion: Int { overrideVersion ?? appState.customWallpaperVersion }
 
     /// 默认照片壁纸（校园黄昏）。自定义图没存过时也退回它。
     private var defaultPhotoBackground: some View {
@@ -19,66 +37,66 @@ struct WallpaperBackground: View {
                 Image(uiImage: uiImage)
                     .resizable()
                     .scaledToFill()
-                    .ignoresSafeArea()
             } else {
                 Color(red: 0.05, green: 0.07, blue: 0.14)
-                    .ignoresSafeArea()
             }
         }
     }
 
     var body: some View {
-        ZStack {
-            switch wallpaper {
-            case 1:
-                LinearGradient(
-                    colors: [Color(red: 0.05, green: 0.12, blue: 0.28), Color(red: 0.02, green: 0.05, blue: 0.12)],
-                    startPoint: .top, endPoint: .bottom
-                )
-                .ignoresSafeArea()
-            case 2:
-                LinearGradient(
-                    colors: [Color(red: 0.05, green: 0.2, blue: 0.14), Color(red: 0.02, green: 0.08, blue: 0.05)],
-                    startPoint: .top, endPoint: .bottom
-                )
-                .ignoresSafeArea()
-            case 3:
-                Color(red: 0.03, green: 0.03, blue: 0.04)
-                    .ignoresSafeArea()
-            case 4:
-                if let data = customWallpaperData(), let uiImage = UIImage(data: data) {
-                    Image(uiImage: uiImage)
-                        .resizable()
-                        .scaledToFill()
-                        // 版本号一变就重建这张图，不再挂旧图（build 71）。
-                        .id(customWallpaperVersion)
-                        .ignoresSafeArea()
-                } else {
-                    defaultPhotoBackground
+        // Color.clear 是纯弹性视图，配最外层 .ignoresSafeArea() 严丝合缝铺满
+        // 物理全屏，绝无底部黑边；所有照片/渐变都在 .overlay 里，宽版/横版图
+        // .scaledToFill() 绝不会把任何父/兄弟视图顶偏，再由 .clipped() 裁掉
+        // 超出屏幕的两侧。allowsHitTesting(false)：壁纸不拦截点击。
+        Color.clear
+            .overlay {
+                ZStack {
+                    wallpaperLayer
+                    // 深色遮罩：顶部 0x8C → 0x26 @0.3 → 0x38 @0.65 → 0xD9 底部（原样保留）。
+                    LinearGradient(
+                        colors: [
+                            Color.black.opacity(0.55),
+                            Color.black.opacity(0.15),
+                            Color.black.opacity(0.22),
+                            Color.black.opacity(0.85),
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
                 }
-            default:
+                .id("\(currentWallpaper)-\(currentVersion)")
+            }
+            .clipped()
+            .allowsHitTesting(false)
+            .ignoresSafeArea()
+    }
+
+    @ViewBuilder
+    private var wallpaperLayer: some View {
+        switch currentWallpaper {
+        case 1:
+            LinearGradient(
+                colors: [Color(red: 0.05, green: 0.12, blue: 0.28), Color(red: 0.02, green: 0.05, blue: 0.12)],
+                startPoint: .top, endPoint: .bottom
+            )
+        case 2:
+            LinearGradient(
+                colors: [Color(red: 0.05, green: 0.2, blue: 0.14), Color(red: 0.02, green: 0.08, blue: 0.05)],
+                startPoint: .top, endPoint: .bottom
+            )
+        case 3:
+            Color(red: 0.03, green: 0.03, blue: 0.04)
+        case 4:
+            if let data = customWallpaperData(), let uiImage = UIImage(data: data) {
+                Image(uiImage: uiImage)
+                    .resizable()
+                    .scaledToFill()
+            } else {
                 defaultPhotoBackground
             }
-            // 深色遮罩：顶部 0x8C → 0x26 @0.3 → 0x38 @0.65 → 0xD9 底部。
-            LinearGradient(
-                colors: [
-                    Color.black.opacity(0.55),
-                    Color.black.opacity(0.15),
-                    Color.black.opacity(0.22),
-                    Color.black.opacity(0.85),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .ignoresSafeArea()
+        default:
+            defaultPhotoBackground
         }
-        // build 70：壁纸永远只占一屏，多余裁掉，绝不撑大父 ZStack。
-        // 横版/宽版照片 scaledToFill 后比屏幕宽得多，不裁就会把同层
-        // 的 ContentView 顶偏——设置页内容被顶没、首页跟着图片变
-        // （Russell 2026-11-19 10:51 截图）。界面只跟屏幕走，不跟图片走。
-        .frame(width: UIScreen.main.bounds.width, height: UIScreen.main.bounds.height)
-        .clipped()
-        .ignoresSafeArea()
     }
 }
 
@@ -91,12 +109,17 @@ struct GlutnnGxunuAssistantApp: App {
         WindowGroup {
             ContentView()
                 .environment(appState)
-                // 壁纸放 .background 而不是 ZStack 兄弟（build 77）：ZStack 里
-                // WallpaperBackground 的 ignoresSafeArea + UIScreen 全屏 frame
-                // 会把底栏的安全区吃掉，系统底栏就沉到底、碰到小横条
-                // （Russell 2026-11-19 15:14 截图，MeowX 那样是浮在小横条上方留空）；
-                // 放 background 里底栏安全区正常，系统底栏恢复浮在小横条上方。
-                .background(WallpaperBackground())
+                // 壁纸挂 .background（build 77 起，保住系统浮动底栏）；build 78
+                // 改用新版闭包 .background { ... } 并显式传参，appState.wallpaper
+                // 一变 WindowGroup 重算、background 跟着重建，换壁纸必刷新。
+                // 旧版 .background(View) 重载在 iOS 26 上不跟 @AppStorage 重建，
+                // 是 build 77 换壁纸卡死的原因之一。
+                .background {
+                    WallpaperBackground(
+                        wallpaper: appState.wallpaper,
+                        customVersion: appState.customWallpaperVersion
+                    )
+                }
             // 窗口级亮/暗模式跟着当前 Tab 走：课表是白底页，窗口切亮色，
             // 系统底栏（UITabBar，只认窗口 trait）就变浅色玻璃；
             // 首页/我的切回深色，白字才看得见。
