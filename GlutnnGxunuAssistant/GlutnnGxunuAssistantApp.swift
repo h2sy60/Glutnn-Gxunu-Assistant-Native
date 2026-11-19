@@ -66,6 +66,13 @@ struct WallpaperBackground: View {
             )
             .ignoresSafeArea()
         }
+        // build 70：壁纸永远只占一屏，多余裁掉，绝不撑大父 ZStack。
+        // 横版/宽版照片 scaledToFill 后比屏幕宽得多，不裁就会把同层
+        // 的 ContentView 顶偏——设置页内容被顶没、首页跟着图片变
+        // （Russell 2026-11-19 10:51 截图）。界面只跟屏幕走，不跟图片走。
+        .frame(width: UIScreen.main.bounds.width, height: UIScreen.main.bounds.height)
+        .clipped()
+        .ignoresSafeArea()
     }
 }
 
