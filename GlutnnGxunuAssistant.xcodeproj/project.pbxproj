@@ -231,7 +231,7 @@
 		727541EBBFDD4A21ADB20598 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {
 			ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 			CODE_SIGN_STYLE = Automatic;
-			CURRENT_PROJECT_VERSION = 66;
+			CURRENT_PROJECT_VERSION = 67;
 			GENERATE_INFOPLIST_FILE = NO;
 			INFOPLIST_FILE = GlutnnGxunuAssistant/Info.plist;
 			INFOPLIST_KEY_CFBundleDisplayName = "桂工课程助手";
@@ -256,7 +256,7 @@
 		D06CA39A7C534CDFA65A23FA /* Release */ = {isa = XCBuildConfiguration; buildSettings = {
 			ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 			CODE_SIGN_STYLE = Automatic;
-			CURRENT_PROJECT_VERSION = 66;
+			CURRENT_PROJECT_VERSION = 67;
 			GENERATE_INFOPLIST_FILE = NO;
 			INFOPLIST_FILE = GlutnnGxunuAssistant/Info.plist;
 			INFOPLIST_KEY_CFBundleDisplayName = "桂工课程助手";
