@@ -819,6 +819,9 @@ final class AppState {
     /// 成功：关弹窗，重拉课表并提示；验证码错：留在弹窗里，提示 + 换一张图再试；
     /// 账号/密码问题：弹窗解决不了，关弹窗回整页登录。
     func confirmCaptchaDialog() async {
+        // build 67：先记一条（只记长度，不记验证码本身），这样下次再报
+        // “点了确认没反应”，日志里能分清是按钮没触发，还是登录没回来。
+        AppLogger.shared.log("captcha dialog confirm tapped: textLength=\(captchaDialogText.count) checking=\(captchaChecking)")
         guard !captchaChecking else { return }
         guard !captchaDialogText.isEmpty else {
             showToast(.error, "请输入验证码", duration: 2)

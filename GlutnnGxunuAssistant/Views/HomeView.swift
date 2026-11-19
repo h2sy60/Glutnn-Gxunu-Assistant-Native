@@ -310,10 +310,17 @@ struct HomeView: View {
             appState.showToast(.loading, "处理数据...", duration: 10)
             appState.showToast(.success, "数据已更新!", duration: 1)
         } else if wasLoggedIn {
-            // 会话过期：原版弹“需要验证”玻璃条，点按弹验证码弹窗（不是整页登录）。
-            // 职师院现在走 reloginGXVNU（两次静默重登，不行才直接弹弹窗），
-            // 到这里的基本是桂工（每次都要验证码）或账号密码真错了。
-            appState.showToast(.error, "需要验证", duration: 10, action: .reverify)
+            // build 67：只有真是会话过期才弹“需要验证”走验证码弹窗；
+            // 解析失败/网络错误要显示真实原因，不然用户被误导去输验证码，
+            // 输完了课表还是拉不到（Russell 2026-11-19 09:14 的遭遇：
+            // 桂工会话过期返回 302 空正文，被误报成“课表解析失败”，
+            // 却弹了“需要验证”）。
+            // refreshSchedule 里桂工/职师院会话过期都记成“登录已过期，请重新登录”。
+            if appState.scheduleError == "登录已过期，请重新登录" {
+                appState.showToast(.error, "需要验证", duration: 10, action: .reverify)
+            } else {
+                appState.showToast(.error, appState.scheduleError ?? "拉取失败", duration: 4)
+            }
         } else {
             appState.showToast(.error, appState.scheduleError ?? "拉取失败", duration: 4)
         }
