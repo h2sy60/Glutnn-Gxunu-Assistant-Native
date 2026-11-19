@@ -248,6 +248,11 @@ struct ScheduleDataView: View {
     @State private var termStartDate: Date = Date()
     @State private var totalWeeks: Int = 20
     @State private var hasTermOverride = false
+    // build 71：日历同步开关/范围也改绑 @AppStorage（同键、同默认值）。
+    // 跟提醒设置同一个毛病——AppSettings 不是 Observable，开关打开后
+    // “同步范围”那行不出现，必须返回再进才有。
+    @AppStorage("AutoCalendarSync") private var autoCalendarSync = false
+    @AppStorage("CalendarSyncRange") private var calendarSyncRange = 0
     /// 初始加载完成才保存（否则 .task 里填初始值也会触发 onChange，
     /// 进页就误写一个开学日期覆盖）。
     @State private var isLoaded = false
@@ -306,15 +311,9 @@ struct ScheduleDataView: View {
                 // 日历同步（build 63）：课表刷新后自动同步到系统日历。
                 // 复用手动导出的 CalendarExporter（先删同名日历再建，不会重复）。
                 Section {
-                    Toggle("自动同步到系统日历", isOn: Binding(
-                        get: { AppSettings.autoCalendarSync },
-                        set: { AppSettings.autoCalendarSync = $0 }
-                    ))
-                    if AppSettings.autoCalendarSync {
-                        Picker("同步范围", selection: Binding(
-                            get: { AppSettings.calendarSyncRange },
-                            set: { AppSettings.calendarSyncRange = $0 }
-                        )) {
+                    Toggle("自动同步到系统日历", isOn: $autoCalendarSync)
+                    if autoCalendarSync {
+                        Picker("同步范围", selection: $calendarSyncRange) {
                             Text("本学期").tag(0)
                             Text("本周起").tag(1)
                         }
@@ -364,6 +363,14 @@ struct ScheduleDataView: View {
 struct ReminderSettingsView: View {
     @Environment(AppState.self) private var appState
     @State private var permissionDenied = false
+    // build 71：提醒开关/提前时间直接绑 @AppStorage，不再经 AppSettings 手写
+    // Binding。AppSettings 不是 Observable，开关打开后视图不重绘，“提前提醒”
+    // 那行就不出现，必须返回再进才有（Russell 2026-11-19 11:04 截图）。
+    // @AppStorage 自己监听，值一变视图就重绘，那行立刻出现。
+    @AppStorage("ClassReminderEnabled") private var classReminderEnabled = false
+    @AppStorage("ClassReminderMinutes") private var classReminderMinutes = 10
+    @AppStorage("ExamReminderEnabled") private var examReminderEnabled = false
+    @AppStorage("ExamReminderDays") private var examReminderDays = 1
 
     var body: some View {
         ZStack {
@@ -372,19 +379,19 @@ struct ReminderSettingsView: View {
             List {
                 Section {
                     Toggle("上课提醒", isOn: Binding(
-                        get: { AppSettings.classReminderEnabled },
+                        get: { classReminderEnabled },
                         set: { enabled in
-                            AppSettings.classReminderEnabled = enabled
+                            classReminderEnabled = enabled
                             Task {
                                 if enabled {
                                     let granted = await ReminderManager.requestPermission()
                                     if granted {
                                         await ReminderManager.rescheduleClassReminders(
                                             courses: appState.courses, school: appState.school,
-                                            leadMinutes: AppSettings.classReminderMinutes)
+                                            leadMinutes: classReminderMinutes)
                                     } else {
                                         permissionDenied = true
-                                        AppSettings.classReminderEnabled = false
+                                        classReminderEnabled = false
                                     }
                                 } else {
                                     await ReminderManager.cancelClassReminders()
@@ -392,11 +399,11 @@ struct ReminderSettingsView: View {
                             }
                         }
                     ))
-                    if AppSettings.classReminderEnabled {
+                    if classReminderEnabled {
                         Picker("提前提醒", selection: Binding(
-                            get: { AppSettings.classReminderMinutes },
+                            get: { classReminderMinutes },
                             set: { minutes in
-                                AppSettings.classReminderMinutes = minutes
+                                classReminderMinutes = minutes
                                 Task {
                                     await ReminderManager.rescheduleClassReminders(
                                         courses: appState.courses, school: appState.school,
@@ -417,19 +424,19 @@ struct ReminderSettingsView: View {
                 }
                 Section {
                     Toggle("考试提醒", isOn: Binding(
-                        get: { AppSettings.examReminderEnabled },
+                        get: { examReminderEnabled },
                         set: { enabled in
-                            AppSettings.examReminderEnabled = enabled
+                            examReminderEnabled = enabled
                             Task {
                                 if enabled {
                                     let granted = await ReminderManager.requestPermission()
                                     if granted {
                                         await ReminderManager.rescheduleExamReminders(
                                             exams: appState.exams,
-                                            leadDays: AppSettings.examReminderDays)
+                                            leadDays: examReminderDays)
                                     } else {
                                         permissionDenied = true
-                                        AppSettings.examReminderEnabled = false
+                                        examReminderEnabled = false
                                     }
                                 } else {
                                     await ReminderManager.cancelExamReminders()
@@ -437,11 +444,11 @@ struct ReminderSettingsView: View {
                             }
                         }
                     ))
-                    if AppSettings.examReminderEnabled {
+                    if examReminderEnabled {
                         Picker("提前提醒", selection: Binding(
-                            get: { AppSettings.examReminderDays },
+                            get: { examReminderDays },
                             set: { days in
-                                AppSettings.examReminderDays = days
+                                examReminderDays = days
                                 Task {
                                     await ReminderManager.rescheduleExamReminders(
                                         exams: appState.exams, leadDays: days)
@@ -489,6 +496,7 @@ struct HomeSettingsView: View {
     @AppStorage("ShowTomorrowCourses") private var showTomorrowCourses = true
     @AppStorage("ShowGreeting") private var showGreeting = true
     @AppStorage("Wallpaper") private var wallpaper = 0
+    @AppStorage("CustomWallpaperVersion") private var customWallpaperVersion = 0
     @State private var showingPhotoPicker = false
     @State private var photoPickerItem: PhotosPickerItem?
 
@@ -511,13 +519,11 @@ struct HomeSettingsView: View {
                         get: { wallpaper },
                         set: { newValue in
                             if newValue == 4 {
-                                if hasCustomWallpaper() {
-                                    // 已存过自定义图：直接切过去。
-                                    wallpaper = 4
-                                } else {
-                                    // 没存过：先开相册，选到图再切（取消不切）。
-                                    showingPhotoPicker = true
-                                }
+                                // build 71：点“自定义照片”永远开相册选图。之前是
+                                // 已存过图就静默切到旧图、不开相册，用户以为点不
+                                // 动、选不上（Russell 2026-11-19 11:04）。
+                                // 想换回已存的那张，重新选一次即可（就在相册里）。
+                                showingPhotoPicker = true
                             } else {
                                 wallpaper = newValue
                             }
@@ -551,6 +557,10 @@ struct HomeSettingsView: View {
                 Task {
                     if let data = try? await item.loadTransferable(type: Data.self), !data.isEmpty {
                         saveCustomWallpaper(data)
+                        // 存了新图就把版本号 +1：wallpaper 已经是 4 时 Int
+                        // 不变不会触发重绘，版本号变了所有页面的壁纸才会
+                        // 重读文件（主页换了、我的页没换，就是缺这个）。
+                        customWallpaperVersion += 1
                         wallpaper = 4
                     }
                     photoPickerItem = nil
@@ -572,6 +582,10 @@ struct GeneralSettingsView: View {
     @State private var backupURL: URL?
     @State private var showingShare = false
     @State private var importMessage: String?
+    // build 71：同 ReminderSettingsView 的毛病——AppSettings 不是 Observable，
+    // 开关/分段选择改了视图不重绘。这里也改绑 @AppStorage（同键、同默认值）。
+    @AppStorage("AutoRefreshOnLaunch") private var autoRefreshOnLaunch = false
+    @AppStorage("ScoreDisplayMode") private var scoreDisplayMode = 0
 
     var body: some View {
         ZStack {
@@ -579,20 +593,14 @@ struct GeneralSettingsView: View {
                 .ignoresSafeArea()
             List {
                 Section {
-                    Toggle("启动时自动刷新课表", isOn: Binding(
-                        get: { AppSettings.autoRefreshOnLaunch },
-                        set: { AppSettings.autoRefreshOnLaunch = $0 }
-                    ))
+                    Toggle("启动时自动刷新课表", isOn: $autoRefreshOnLaunch)
                 } header: {
                     Text("启动")
                 } footer: {
                     Text("默认关。打开后每次启动 app 都会自动刷新一次课表（默认是手动刷新）。")
                 }
                 Section {
-                    Picker("成绩每行显示", selection: Binding(
-                        get: { AppSettings.scoreDisplayMode },
-                        set: { AppSettings.scoreDisplayMode = $0 }
-                    )) {
+                    Picker("成绩每行显示", selection: $scoreDisplayMode) {
                         Text("原始成绩").tag(0)
                         Text("绩点").tag(1)
                         Text("数字分").tag(2)
