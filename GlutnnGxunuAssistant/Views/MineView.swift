@@ -719,6 +719,8 @@ struct TimeManageView: View {
                         CustomSectionTimes.reset(for: school.id)
                         load()
                         notice = "已恢复默认作息"
+                        // 作息版本号 +1：课表页和首页重读文件，立刻显示默认时间。
+                        appState.sectionTimesVersion += 1
                     }
                     Button("保存") {
                         let cal = Calendar(identifier: .gregorian)
@@ -726,6 +728,9 @@ struct TimeManageView: View {
                         let end = endDates.map { [cal.component(.hour, from: $0), cal.component(.minute, from: $0)] }
                         CustomSectionTimes.save(CustomSectionTimes(start: start, end: end), for: school.id)
                         notice = "已保存"
+                        // 作息版本号 +1：课表页和首页重读文件，立刻显示新时间
+                        // （之前只写文件不通知，时间要等刷新/切周/重启才变）。
+                        appState.sectionTimesVersion += 1
                     }
                 }
                 if let notice {
