@@ -231,7 +231,7 @@
 		727541EBBFDD4A21ADB20598 /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {
 			ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 			CODE_SIGN_STYLE = Automatic;
-			CURRENT_PROJECT_VERSION = 74;
+			CURRENT_PROJECT_VERSION = 75;
 			GENERATE_INFOPLIST_FILE = NO;
 			INFOPLIST_FILE = GlutnnGxunuAssistant/Info.plist;
 			INFOPLIST_KEY_CFBundleDisplayName = "桂工课程助手";
@@ -245,7 +245,7 @@
 				"$(inherited)",
 				"@executable_path/Frameworks",
 			);
-			MARKETING_VERSION = 1.0.0;
+			MARKETING_VERSION = 1.1.0;
 			PRODUCT_BUNDLE_IDENTIFIER = com.h2sy60.GlutnnGxunuAssistant;
 			PRODUCT_NAME = "$(TARGET_NAME)";
 			SWIFT_EMBED_LIBRARIES_WITH_INSTALL = YES;
@@ -256,7 +256,7 @@
 		D06CA39A7C534CDFA65A23FA /* Release */ = {isa = XCBuildConfiguration; buildSettings = {
 			ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 			CODE_SIGN_STYLE = Automatic;
-			CURRENT_PROJECT_VERSION = 74;
+			CURRENT_PROJECT_VERSION = 75;
 			GENERATE_INFOPLIST_FILE = NO;
 			INFOPLIST_FILE = GlutnnGxunuAssistant/Info.plist;
 			INFOPLIST_KEY_CFBundleDisplayName = "桂工课程助手";
@@ -270,7 +270,7 @@
 				"$(inherited)",
 				"@executable_path/Frameworks",
 			);
-			MARKETING_VERSION = 1.0.0;
+			MARKETING_VERSION = 1.1.0;
 			PRODUCT_BUNDLE_IDENTIFIER = com.h2sy60.GlutnnGxunuAssistant;
 			PRODUCT_NAME = "$(TARGET_NAME)";
 			SWIFT_EMBED_LIBRARIES_WITH_INSTALL = YES;
