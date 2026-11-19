@@ -301,7 +301,8 @@ struct ScheduleView: View {
                                         visibleWeekdays: visibleWeekdays,
                                         onSelect: { start, end, course in
                                             selectedBlock = (start, end, course)
-                                        }
+                                        },
+                                        timesVersion: appState.sectionTimesVersion
                                     )
                                     .padding(.bottom, bottomClearance)
                                 }
@@ -456,6 +457,10 @@ struct ScheduleGrid: View {
     var visibleWeekdays: [Int] = [1, 2, 3, 4, 5, 6, 7]
     /// 点课程块回调（start/end 是合并后的节次范围）。
     var onSelect: ((Int, Int, Course) -> Void)? = nil
+    /// 作息版本号（build 72）：时间管理每存一次 AppState.sectionTimesVersion
+    /// 就 +1，传进来只是为了让网格跟着变——值一变这个结构体的值就变了，
+    /// 网格重绘时重新读生效时间（CustomSectionTimes 只写文件，不会自己通知）。
+    var timesVersion: Int = 0
 
     /// 左侧栏宽（Flutter _railWidth = 46）。
     private let gutter: CGFloat = 46
