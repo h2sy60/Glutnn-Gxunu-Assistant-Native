@@ -464,6 +464,11 @@ final class AppState {
     /// 课表外观（build 48）：按学校 + 学号永久保存，登录即用这一套。
     var scheduleAppearance: ScheduleAppearance = .default
 
+    /// 作息版本号（build 72）：时间管理每存一次就 +1。CustomSectionTimes
+    /// 只是写文件的普通结构体，不是 Observable，课表页和首页不会自己重绘；
+    /// 这个版本号一变，读生效时间的页面就重读文件、立刻显示新时间。
+    var sectionTimesVersion = 0
+
     /// 外观设置的 UserDefaults 键（学校 + 学号；没学号用 guest）。
     private static func appearanceKey(schoolId: SchoolID, studentId: String) -> String {
         "ScheduleAppearance_v1.\(schoolId.rawValue).\(studentId.isEmpty ? "guest" : studentId)"
@@ -1505,6 +1510,27 @@ extension AppState {
         if let cached = ScheduleStore.load(schoolId: school.id) {
             courses = cached.courses
             studentName = cached.studentName
+        }
+        // build 72：导入后立刻重排提醒。之前只恢复了开关，系统里到点响的
+        // 提醒是空的，得等下次刷新课表才回来——开关显示开着，提醒实际没排上。
+        // 恢复出来的课表就在 courses 里，直接拿它排；考试不在备份里，用当前
+        // 的 exams（空就排不上，等考试刷新后自动重排）。reschedule 内部不弹
+        // 权限申请，没授权就静默排不上，导入时不打扰用户。
+        if AppSettings.classReminderEnabled {
+            let restoredCourses = courses
+            let currentSchool = school
+            let leadMinutes = AppSettings.classReminderMinutes
+            Task {
+                await ReminderManager.rescheduleClassReminders(
+                    courses: restoredCourses, school: currentSchool, leadMinutes: leadMinutes)
+            }
+        }
+        if AppSettings.examReminderEnabled {
+            let currentExams = exams
+            let leadDays = AppSettings.examReminderDays
+            Task {
+                await ReminderManager.rescheduleExamReminders(exams: currentExams, leadDays: leadDays)
+            }
         }
         AppLogger.shared.log("backup imported")
         return true
