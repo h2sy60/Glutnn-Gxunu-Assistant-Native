@@ -1,6 +1,14 @@
+<p align="center">
+  <img src="screenshots/icon.png" width="120" alt="周周有善图标">
+</p>
+
 # Glutnn-Gxunu-Assistant-Native
 
 周周有善 —— SwiftUI（iOS 26，Liquid Glass 用系统 `.glassEffect()`）。
+
+## 图标
+
+应用图标是一块蓝色液态玻璃：顶部是学士帽，代表大学；中间的日历代表课表，流动的飘带代表时间；下方是桂林山水（喀斯特峰林、桥与塔），呼应两所学校所在的桂林。
 
 ## 截图
 
