@@ -109,6 +109,22 @@ enum GUTService {
             || html.contains("top.location.href")
     }
 
+    /// build 67：会话过期时桂工返回 302（Location: login.jsp）且正文为空（0 字节）。
+    /// NetworkClient 关了重定向跟随，所以直接拿到 302 + 空正文。
+    /// 必须先按状态码判会话过期，再解码——否则空正文会先触发解析失败，
+    /// 会话过期被误报成“课表解析失败”，刷新也永远修不好
+    /// （Russell 2026-11-19 09:14 报的验证码重登无效，日志证实：
+    /// 5 次刷新全是 bytes=0 + 课表解析失败）。
+    /// fetchSchedule / fetchScores / fetchExams 都在解码前调它。
+    private static func throwIfSessionExpired(response: HTTPURLResponse) throws {
+        if response.statusCode == 301 || response.statusCode == 302 {
+            let loc = (response.value(forHTTPHeaderField: "Location") ?? "").lowercased()
+            if loc.contains("login") || loc.contains("index.jsp") || loc.contains("security") {
+                throw ScheduleError.sessionExpired
+            }
+        }
+    }
+
     /// 桂工老正方返回 GBK 编码的 HTML（Flutter 版 getHtml 用 gbk.decode）。
     /// build 43：优先 GB18030（GBK 的超集），除非响应明确声明 utf-8；
     /// 失败再 fallback 到另一种编码（专家意见：旧代码先试 UTF-8，
@@ -148,8 +164,10 @@ enum GUTService {
         } catch let error as NetworkError {
             throw ScheduleError.network(error.errorDescription ?? "网络错误")
         }
+        // build 67：先按状态码判会话过期（302 空正文），再解码。
+        try throwIfSessionExpired(response: response)
         guard let html = decodeGUTHTML(data, response: response), !html.isEmpty else {
-            AppLogger.shared.log("GUT schedule: empty or undecodable response, bytes=\(data.count)")
+            AppLogger.shared.log("GUT schedule: empty or undecodable response, bytes=\(data.count) status=\(response.statusCode)")
             throw ScheduleError.parseError
         }
         // 会话过期检测：302 到登录页、或正文含未登录特征。
@@ -526,6 +544,8 @@ enum GUTService {
         } catch let error as NetworkError {
             throw ScheduleError.network(error.errorDescription ?? "网络错误")
         }
+        // build 67：先按状态码判会话过期（302 空正文），再解码。
+        try throwIfSessionExpired(response: response)
         guard let html = decodeGUTHTML(data, response: response), !html.isEmpty else {
             throw ScheduleError.parseError
         }
@@ -597,6 +617,8 @@ enum GUTService {
         } catch let error as NetworkError {
             throw ScheduleError.network(error.errorDescription ?? "网络错误")
         }
+        // build 67：先按状态码判会话过期（302 空正文），再解码。
+        try throwIfSessionExpired(response: response)
         guard let html = decodeGUTHTML(data, response: response), !html.isEmpty else {
             throw ScheduleError.parseError
         }
