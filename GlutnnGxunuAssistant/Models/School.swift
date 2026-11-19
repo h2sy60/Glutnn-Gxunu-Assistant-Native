@@ -152,98 +152,100 @@ struct CustomSectionTimes: Codable {
 /// 全部设置的统一读写（按学校分的加 schoolId 后缀）。默认一律关/默认项，
 /// 不改任何现有行为，开了才生效。
 enum AppSettings {
-    private static let defaults = UserDefaults.standard
+    // build 65 修 CI：原来这里存了一个 `private static let defaults = UserDefaults.standard`，
+    // Swift 6 严格并发报错（UserDefaults 不是 Sendable，不能放 static let）。
+    // 改成每次直接调 UserDefaults.standard（和 CustomSectionTimes / GUTService 同款写法）。
 
     // MARK: 学期设置（按学校）
     /// 开学日期覆盖（存时间戳；没存过返回 nil，用学校默认开学日）。
     static func termStartDateOverride(for schoolId: SchoolID) -> Date? {
-        let t = defaults.double(forKey: "TermStartDateOverride.\(schoolId.rawValue)")
+        let t = UserDefaults.standard.double(forKey: "TermStartDateOverride.\(schoolId.rawValue)")
         guard t > 0 else { return nil }
         return Date(timeIntervalSince1970: t)
     }
     static func setTermStartDateOverride(_ date: Date?, for schoolId: SchoolID) {
         if let date {
-            defaults.set(date.timeIntervalSince1970, forKey: "TermStartDateOverride.\(schoolId.rawValue)")
+            UserDefaults.standard.set(date.timeIntervalSince1970, forKey: "TermStartDateOverride.\(schoolId.rawValue)")
         } else {
-            defaults.removeObject(forKey: "TermStartDateOverride.\(schoolId.rawValue)")
+            UserDefaults.standard.removeObject(forKey: "TermStartDateOverride.\(schoolId.rawValue)")
         }
     }
     /// 学期总周数（默认 20）。
     static func totalWeeks(for schoolId: SchoolID) -> Int {
-        let v = defaults.integer(forKey: "TotalWeeks.\(schoolId.rawValue)")
+        let v = UserDefaults.standard.integer(forKey: "TotalWeeks.\(schoolId.rawValue)")
         return v > 0 ? v : 20
     }
     static func setTotalWeeks(_ weeks: Int, for schoolId: SchoolID) {
-        defaults.set(weeks, forKey: "TotalWeeks.\(schoolId.rawValue)")
+        UserDefaults.standard.set(weeks, forKey: "TotalWeeks.\(schoolId.rawValue)")
     }
 
     // MARK: 日历同步
     /// 课表刷新后自动同步到系统日历（默认关）。
     static var autoCalendarSync: Bool {
-        get { defaults.bool(forKey: "AutoCalendarSync") }
-        set { defaults.set(newValue, forKey: "AutoCalendarSync") }
+        get { UserDefaults.standard.bool(forKey: "AutoCalendarSync") }
+        set { UserDefaults.standard.set(newValue, forKey: "AutoCalendarSync") }
     }
     /// 同步范围：0=本学期（全部周），1=本周起（只同步当前周及以后）。
     static var calendarSyncRange: Int {
-        get { defaults.integer(forKey: "CalendarSyncRange") }
-        set { defaults.set(newValue, forKey: "CalendarSyncRange") }
+        get { UserDefaults.standard.integer(forKey: "CalendarSyncRange") }
+        set { UserDefaults.standard.set(newValue, forKey: "CalendarSyncRange") }
     }
 
     // MARK: 提醒设置
     /// 上课提醒（默认关）。
     static var classReminderEnabled: Bool {
-        get { defaults.bool(forKey: "ClassReminderEnabled") }
-        set { defaults.set(newValue, forKey: "ClassReminderEnabled") }
+        get { UserDefaults.standard.bool(forKey: "ClassReminderEnabled") }
+        set { UserDefaults.standard.set(newValue, forKey: "ClassReminderEnabled") }
     }
     /// 上课提前提醒分钟数（默认 10）。
     static var classReminderMinutes: Int {
-        get { let v = defaults.integer(forKey: "ClassReminderMinutes"); return v > 0 ? v : 10 }
-        set { defaults.set(newValue, forKey: "ClassReminderMinutes") }
+        get { let v = UserDefaults.standard.integer(forKey: "ClassReminderMinutes"); return v > 0 ? v : 10 }
+        set { UserDefaults.standard.set(newValue, forKey: "ClassReminderMinutes") }
     }
     /// 考试提醒（默认关）。
     static var examReminderEnabled: Bool {
-        get { defaults.bool(forKey: "ExamReminderEnabled") }
-        set { defaults.set(newValue, forKey: "ExamReminderEnabled") }
+        get { UserDefaults.standard.bool(forKey: "ExamReminderEnabled") }
+        set { UserDefaults.standard.set(newValue, forKey: "ExamReminderEnabled") }
     }
     /// 考试提前提醒天数（默认 1）。
     static var examReminderDays: Int {
-        get { let v = defaults.integer(forKey: "ExamReminderDays"); return v > 0 ? v : 1 }
-        set { defaults.set(newValue, forKey: "ExamReminderDays") }
+        get { let v = UserDefaults.standard.integer(forKey: "ExamReminderDays"); return v > 0 ? v : 1 }
+        set { UserDefaults.standard.set(newValue, forKey: "ExamReminderDays") }
     }
 
     // MARK: 首页设置
     /// 首页显示近期考试条（默认开）。
     static var showRecentExams: Bool {
-        get { defaults.object(forKey: "ShowRecentExams") == nil ? true : defaults.bool(forKey: "ShowRecentExams") }
-        set { defaults.set(newValue, forKey: "ShowRecentExams") }
+        get { UserDefaults.standard.object(forKey: "ShowRecentExams") == nil ? true : UserDefaults.standard.bool(forKey: "ShowRecentExams") }
+        set { UserDefaults.standard.set(newValue, forKey: "ShowRecentExams") }
     }
     /// 首页显示明日课程（默认开）。
     static var showTomorrowCourses: Bool {
-        get { defaults.object(forKey: "ShowTomorrowCourses") == nil ? true : defaults.bool(forKey: "ShowTomorrowCourses") }
-        set { defaults.set(newValue, forKey: "ShowTomorrowCourses") }
+        get { UserDefaults.standard.object(forKey: "ShowTomorrowCourses") == nil ? true : UserDefaults.standard.bool(forKey: "ShowTomorrowCourses") }
+        set { UserDefaults.standard.set(newValue, forKey: "ShowTomorrowCourses") }
     }
     /// 首页显示问候语（默认开）。
     static var showGreeting: Bool {
-        get { defaults.object(forKey: "ShowGreeting") == nil ? true : defaults.bool(forKey: "ShowGreeting") }
-        set { defaults.set(newValue, forKey: "ShowGreeting") }
+        get { UserDefaults.standard.object(forKey: "ShowGreeting") == nil ? true : UserDefaults.standard.bool(forKey: "ShowGreeting") }
+        set { UserDefaults.standard.set(newValue, forKey: "ShowGreeting") }
     }
     /// 首页壁纸：0=默认（校园黄昏照片），1=深蓝渐变，2=墨绿渐变，3=纯黑。
     static var wallpaper: Int {
-        get { defaults.integer(forKey: "Wallpaper") }
-        set { defaults.set(newValue, forKey: "Wallpaper") }
+        get { UserDefaults.standard.integer(forKey: "Wallpaper") }
+        set { UserDefaults.standard.set(newValue, forKey: "Wallpaper") }
     }
 
     // MARK: 通用设置
     /// 启动时自动刷新课表（默认关；Russell 2026-11-18 定手动刷新为主，
     /// 这个开关默认关，不改现有行为）。
     static var autoRefreshOnLaunch: Bool {
-        get { defaults.bool(forKey: "AutoRefreshOnLaunch") }
-        set { defaults.set(newValue, forKey: "AutoRefreshOnLaunch") }
+        get { UserDefaults.standard.bool(forKey: "AutoRefreshOnLaunch") }
+        set { UserDefaults.standard.set(newValue, forKey: "AutoRefreshOnLaunch") }
     }
     /// 成绩每行显示：0=原始成绩，1=绩点，2=数字分（默认 0）。
     static var scoreDisplayMode: Int {
-        get { defaults.integer(forKey: "ScoreDisplayMode") }
-        set { defaults.set(newValue, forKey: "ScoreDisplayMode") }
+        get { UserDefaults.standard.integer(forKey: "ScoreDisplayMode") }
+        set { UserDefaults.standard.set(newValue, forKey: "ScoreDisplayMode") }
     }
 }
 
