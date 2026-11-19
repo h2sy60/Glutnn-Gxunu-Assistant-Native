@@ -27,12 +27,43 @@ enum GUTService {
         }
     }
 
+    // MARK: - 验证码预检（旧项目同款，build 68 补回）
+
+    /// 验证码预检：旧项目 login.dart checkCaptcha + dialog.dart showCaptchaDialog
+    /// 都是先调它，通过了才真正登录。POST /academic/checkCaptcha.do，
+    /// captchaCode 同时放 URL 参数和 body（旧项目写法），正文 "true" 才算对。
+    /// build 68：Russell 2026-11-19 10:03 让对照旧项目——原生版之前跳过这
+    /// 一步、直接拿验证码去登录 POST，与旧项目流程不一致，补回。
+    static func checkCaptcha(_ code: String) async -> Bool {
+        guard let url = school.url("/academic/checkCaptcha.do", query: ["captchaCode": code]) else { return false }
+        do {
+            let (data, _) = try await client.postForm(url, form: ["captchaCode": code])
+            let body = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let ok = body == "true"
+            AppLogger.shared.log("GUT checkCaptcha: \(ok ? "ok" : "fail")")
+            return ok
+        } catch {
+            AppLogger.shared.log("GUT checkCaptcha error: \(error.localizedDescription)")
+            return false
+        }
+    }
+
     // MARK: - 登录
 
     /// 登录。captcha 为用户输入的验证码（桂工每次都要）。
     static func login(studentId: String, password: String, captcha: String) async -> LoginOutcome {
         guard let url = school.url("/academic/j_acegi_security_check") else {
             return .failure("地址无效")
+        }
+        // build 68：先预检验证码（旧项目流程）。验证码不对直接失败，不发登录
+        // 请求；旧项目 login.dart checking() / dialog.dart check() 都是
+        // 先 checkCaptcha、通过了才调 login()。
+        if !captcha.isEmpty {
+            let captchaOK = await checkCaptcha(captcha)
+            if !captchaOK {
+                AppLogger.shared.log("GUT login failure: captcha invalid")
+                return .failure("验证码错误，请重新输入")
+            }
         }
         do {
             let form = [
