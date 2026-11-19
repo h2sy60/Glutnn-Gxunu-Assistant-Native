@@ -492,11 +492,10 @@ struct ReminderSettingsView: View {
 /// label，本来就点不动）。已存过自定义图时，点“自定义照片”直接切过去；
 /// 要换图点下面的“更换自定义照片”。
 struct HomeSettingsView: View {
+    @Environment(AppState.self) private var appState
     @AppStorage("ShowRecentExams") private var showRecentExams = true
     @AppStorage("ShowTomorrowCourses") private var showTomorrowCourses = true
     @AppStorage("ShowGreeting") private var showGreeting = true
-    @AppStorage("Wallpaper") private var wallpaper = 0
-    @AppStorage("CustomWallpaperVersion") private var customWallpaperVersion = 0
     @State private var showingPhotoPicker = false
     @State private var photoPickerItem: PhotosPickerItem?
 
@@ -516,7 +515,7 @@ struct HomeSettingsView: View {
                 }
                 Section {
                     Picker("壁纸", selection: Binding(
-                        get: { wallpaper },
+                        get: { appState.wallpaper },
                         set: { newValue in
                             if newValue == 4 {
                                 // build 71：点“自定义照片”永远开相册选图。之前是
@@ -525,7 +524,7 @@ struct HomeSettingsView: View {
                                 // 想换回已存的那张，重新选一次即可（就在相册里）。
                                 showingPhotoPicker = true
                             } else {
-                                wallpaper = newValue
+                                appState.wallpaper = newValue
                             }
                         }
                     )) {
@@ -560,8 +559,8 @@ struct HomeSettingsView: View {
                         // 存了新图就把版本号 +1：wallpaper 已经是 4 时 Int
                         // 不变不会触发重绘，版本号变了所有页面的壁纸才会
                         // 重读文件（主页换了、我的页没换，就是缺这个）。
-                        customWallpaperVersion += 1
-                        wallpaper = 4
+                        appState.customWallpaperVersion += 1
+                        appState.wallpaper = 4
                     }
                     photoPickerItem = nil
                 }

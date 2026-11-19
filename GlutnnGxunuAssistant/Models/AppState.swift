@@ -469,6 +469,19 @@ final class AppState {
     /// 这个版本号一变，读生效时间的页面就重读文件、立刻显示新时间。
     var sectionTimesVersion = 0
 
+    /// 壁纸（build 78，专家方案）：状态收口到 AppState（@Observable），与
+    /// UserDefaults 同步（键名沿用 "Wallpaper" / "CustomWallpaperVersion"，
+    /// AppSettings.wallpaper 读的是同一个键，不会脱节）。
+    /// 之前壁纸只存在各页零散的 @AppStorage 里，挂在 .background() 的
+    /// WallpaperBackground 换壁纸时不重绘、卡在旧图上（build 77 回归）。
+    /// 收口后设置页一改，所有页的壁纸同一帧刷新。
+    var wallpaper: Int = UserDefaults.standard.integer(forKey: "Wallpaper") {
+        didSet { UserDefaults.standard.set(wallpaper, forKey: "Wallpaper") }
+    }
+    var customWallpaperVersion: Int = UserDefaults.standard.integer(forKey: "CustomWallpaperVersion") {
+        didSet { UserDefaults.standard.set(customWallpaperVersion, forKey: "CustomWallpaperVersion") }
+    }
+
     /// 外观设置的 UserDefaults 键（学校 + 学号；没学号用 guest）。
     private static func appearanceKey(schoolId: SchoolID, studentId: String) -> String {
         "ScheduleAppearance_v1.\(schoolId.rawValue).\(studentId.isEmpty ? "guest" : studentId)"
