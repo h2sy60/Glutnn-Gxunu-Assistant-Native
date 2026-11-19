@@ -3,9 +3,25 @@ import SwiftUI
 /// 全屏背景：Flutter 版校园黄昏壁纸 + 深色渐变遮罩（B 方案同一套）。
 /// 放在 WindowGroup 层（TabView 之上），铺满到屏幕边缘；各页内容仍留在安全区内。
 /// build 63 首页设置可换壁纸：0=校园黄昏照片（默认），1=深蓝渐变，2=墨绿渐变，3=纯黑。
+/// build 69：4=自定义照片（相册选图，存 Documents/custom-wallpaper.jpg；没存过退回校园黄昏）。
 /// 用 @AppStorage 读同一个键，设置页一改这里立即重绘。
 struct WallpaperBackground: View {
     @AppStorage("Wallpaper") private var wallpaper = 0
+
+    /// 默认照片壁纸（校园黄昏）。自定义图没存过时也退回它。
+    private var defaultPhotoBackground: some View {
+        Group {
+            if let data = wallpaperImageData(), let uiImage = UIImage(data: data) {
+                Image(uiImage: uiImage)
+                    .resizable()
+                    .scaledToFill()
+                    .ignoresSafeArea()
+            } else {
+                Color(red: 0.05, green: 0.07, blue: 0.14)
+                    .ignoresSafeArea()
+            }
+        }
+    }
 
     var body: some View {
         ZStack {
@@ -25,16 +41,17 @@ struct WallpaperBackground: View {
             case 3:
                 Color(red: 0.03, green: 0.03, blue: 0.04)
                     .ignoresSafeArea()
-            default:
-                if let data = wallpaperImageData(), let uiImage = UIImage(data: data) {
+            case 4:
+                if let data = customWallpaperData(), let uiImage = UIImage(data: data) {
                     Image(uiImage: uiImage)
                         .resizable()
                         .scaledToFill()
                         .ignoresSafeArea()
                 } else {
-                    Color(red: 0.05, green: 0.07, blue: 0.14)
-                        .ignoresSafeArea()
+                    defaultPhotoBackground
                 }
+            default:
+                defaultPhotoBackground
             }
             // 深色遮罩：顶部 0x8C → 0x26 @0.3 → 0x38 @0.65 → 0xD9 底部。
             LinearGradient(
