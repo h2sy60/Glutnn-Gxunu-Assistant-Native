@@ -310,7 +310,13 @@ struct ScheduleView: View {
                             .tag(w)
                         }
                     }
-                    .id(appState.school.id) // 换校时干净重建分页器（build 42）
+                    // build 73：删掉 .id(school.id)。换校时它会把整个 UIPageViewController
+                    // 销毁重建，而切学校正是在登录页（fullScreenCover）里点的，课表页
+                    // 当时被盖在下面、还不是当前 Tab——离屏重建分页器直接闪退
+                    // （Russell 2026-11-19 11:18 日志：切到 gxvnu 后 1 秒内必闪，
+                    // 连试 5 次全闪，重启回桂工）。build 42 的闪退根因是两个分支各打
+                    // .tag(w)，早已由“单一 ZStack + 唯一 .tag(w)”修掉，.id 重建不是
+                    // 必需的；去掉后分页器留在原地，只换内容和周数，不再拆。
                     .tabViewStyle(.page(indexDisplayMode: .never))
                     .frame(height: rowHeightValue * CGFloat(appState.school.sectionCount) + bottomClearance)
                 }
