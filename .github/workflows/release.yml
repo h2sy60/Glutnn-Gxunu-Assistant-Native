@@ -1,0 +1,65 @@
+name: Release IPA
+
+# 照 po0-clash 的发布流程：推版本 tag（v*）就触发，自动编译并把 IPA 传到该 tag 的 Release 上。
+# 和 ios-unsigned-ipa.yml 的区别：那个只产 workflow 构件（90 天过期），不碰 Release；
+# 这个专管发版。tag 从网页端创建 Release 时生成（Releases → Draft a new release）。
+# IPA 仍是未签名的，和现在一样。
+on:
+  push:
+    tags:
+      - 'v*'
+
+# 上传 Release 附件需要写 contents（默认 token 只有 read）。
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 26
+        run: |
+          ls /Applications/ | grep -i xcode || true
+          if [ -d "/Applications/Xcode_26.app" ]; then sudo xcode-select -s /Applications/Xcode_26.app; fi
+          xcodebuild -version
+          swift --version
+
+      - name: Build (unsigned)
+        run: |
+          xcodebuild -project GlutnnGxunuAssistant.xcodeproj \
+            -target GlutnnGxunuAssistant \
+            -configuration Release \
+            -sdk iphoneos \
+            CONFIGURATION_BUILD_DIR="$PWD/build/Products" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Verify app identity
+        run: |
+          APP="build/Products/GlutnnGxunuAssistant.app"
+          test -d "$APP" || { echo "app not found at $APP"; find build -name "*.app" -type d; exit 1; }
+          /usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print CFBundleDisplayName" "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print CFBundleShortVersionString" "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print CFBundleVersion" "$APP/Info.plist"
+
+      - name: Package unsigned IPA
+        run: |
+          APP="build/Products/GlutnnGxunuAssistant.app"
+          rm -rf Payload
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -r "GlutnnGxunuAssistant-${{ github.ref_name }}.ipa" Payload
+          ls -lh GlutnnGxunuAssistant-*.ipa
+
+      # Release 已存在（网页端创建时已建）就只传附件；不存在则顺手建一个（自动生成更新说明）。
+      - name: Upload IPA to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: GlutnnGxunuAssistant-${{ github.ref_name }}.ipa
+          generate_release_notes: true
