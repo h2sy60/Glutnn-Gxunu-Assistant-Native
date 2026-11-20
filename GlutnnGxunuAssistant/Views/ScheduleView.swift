@@ -180,11 +180,13 @@ struct ScheduleView: View {
     private var headerView: some View {
         VStack(spacing: 0) {
             // 顶栏（原版 ScheduleTopBar）：左“第 X 周 周Y”，右“导出”+“日期📍”玻璃药丸。
+            // build 80：照 WakeUp，看非本周时标题显示“第 X 周(非本周)”
+            //（Russell 2026-11-20 圈了 WakeUp 截图的“第18周(非本周)”）。
             HStack {
                 Button {
                     backToCurrentWeek()
                 } label: {
-                    Text("第\(week)周\(isCurrentWeek ? " 周\(todayWeekdayChar)" : "")")
+                    Text("第\(week)周\(isCurrentWeek ? " 周\(todayWeekdayChar)" : "(非本周)")")
                         .font(.system(size: 20, weight: .bold))
                         // build 57：表头颜色跟设置走。
                         .foregroundStyle(appState.scheduleAppearance.headerColor)
@@ -227,9 +229,9 @@ struct ScheduleView: View {
             .padding(.top, 8)
             .padding(.bottom, 6)
 
-            // 周 strip（原版 _Header）：只有星期字，当天黑色 pill；不显示日期数字。
-            // build 57：按设置隐藏周六/周日；星期字颜色跟表头颜色走。
-            WeekDateStrip(week: week, isCurrentWeek: isCurrentWeek, visibleWeekdays: visibleWeekdays, headerColor: appState.scheduleAppearance.headerColor)
+            // 周 strip（原版 _Header）：星期字 + 下面显示日期号，当天黑色 pill。
+            // build 80：日期号从学期开学日算（effectiveTermStartDate 已含用户覆盖）。
+            WeekDateStrip(week: week, isCurrentWeek: isCurrentWeek, visibleWeekdays: visibleWeekdays, headerColor: appState.scheduleAppearance.headerColor, termStartDate: appState.school.effectiveTermStartDate)
                 .padding(.horizontal, 8)
                 .padding(.top, 4)
                 .padding(.bottom, 10)
@@ -349,21 +351,32 @@ struct ScheduleView: View {
     }
 }
 
-/// 周 strip（原版 _Header）：只有星期字（一..日），当天是黑色圆角 pill。
+/// 周 strip（原版 _Header）：星期字（一..日）+ 下面显示日期号，当天是黑色圆角 pill。
 /// 左侧留出和网格左侧栏一样的宽度（46），星期列才和网格的 7 天列对齐。
-/// showDayByWeekDay 默认 false，所以不显示日期数字。
+/// build 80：照 WakeUp，星期字下面加日期号（Russell 2026-11-20 圈了 WakeUp
+/// 截图的周标题区）；日期从学期开学日（第 1 周周一）算：第 week 周的星期 weekday
+/// = 开学日 + (week-1)*7 + (weekday-1) 天（和提醒排期同一算法）。
 /// build 57：按设置隐藏周六/周日；星期字颜色跟表头颜色走。
 struct WeekDateStrip: View {
     let week: Int
     let isCurrentWeek: Bool
     var visibleWeekdays: [Int] = [1, 2, 3, 4, 5, 6, 7]
     var headerColor: Color = .black
+    var termStartDate: Date = Date()
 
     private let weekdayChars = ["一", "二", "三", "四", "五", "六", "日"]
 
     private var todayIndex: Int {
         let wd = Calendar(identifier: .gregorian).component(.weekday, from: Date())
         return wd == 1 ? 7 : wd - 1
+    }
+
+    /// 该周某天的日期号（1...31）。
+    private func dayNumber(for weekday: Int) -> Int {
+        let cal = Calendar(identifier: .gregorian)
+        let offset = (week - 1) * 7 + (weekday - 1)
+        guard let date = cal.date(byAdding: .day, value: offset, to: termStartDate) else { return 0 }
+        return cal.component(.day, from: date)
     }
 
     var body: some View {
@@ -374,18 +387,23 @@ struct WeekDateStrip: View {
             ForEach(visibleWeekdays, id: \.self) { weekday in
                 let i = weekday - 1
                 let today = isCurrentWeek && (i + 1) == todayIndex
-                Text(weekdayChars[i])
-                    .font(.system(size: 13))
-                    .foregroundStyle(today ? .white : headerColor.opacity(0.6))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 4)
-                    .background(
-                        today
-                            ? Color.black.opacity(0.85)
-                            : Color.clear,
-                        in: RoundedRectangle(cornerRadius: 10)
-                    )
-                    .padding(.horizontal, 10)
+                VStack(spacing: 1) {
+                    Text(weekdayChars[i])
+                        .font(.system(size: 13))
+                        .foregroundStyle(today ? .white : headerColor.opacity(0.6))
+                    Text("\(dayNumber(for: weekday))")
+                        .font(.system(size: 11))
+                        .foregroundStyle(today ? .white : headerColor.opacity(0.45))
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 4)
+                .background(
+                    today
+                        ? Color.black.opacity(0.85)
+                        : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 10)
+                )
+                .padding(.horizontal, 10)
             }
         }
     }
