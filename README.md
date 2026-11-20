@@ -123,7 +123,7 @@
 - Deployment Target：iOS 26.0（需要 Xcode 26）
 - Bundle ID：`com.h2sy60.GlutnnGxunuAssistant`
 - 显示名：周周有善
-- 版本：1.1.0（build 79）
+- 版本：1.1.0（build 80）
 
 ## 构建（未签名 IPA）
 
