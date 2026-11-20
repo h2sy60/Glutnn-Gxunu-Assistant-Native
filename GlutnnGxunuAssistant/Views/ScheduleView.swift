@@ -215,6 +215,10 @@ struct ScheduleView: View {
                             Text(todayDateText)
                                 .font(.system(size: 15, weight: .semibold))
                                 .foregroundStyle(Color.black.opacity(0.87))
+                                // build 82：build 80 的“(非本周)”把标题拉长，日期胶囊被挤得
+                                // 放不下就折成两行。强制一行，放不下就缩字，不折行。
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.85)
                             Image(systemName: "mappin.circle.fill")
                                 .font(.system(size: 15))
                                 .foregroundStyle(Color.black.opacity(0.87))
@@ -379,11 +383,31 @@ struct WeekDateStrip: View {
         return cal.component(.day, from: date)
     }
 
+    /// 当周周一的月份（1...12）。照 WakeUp，显示在左侧空位（“11月”上下两行）；
+    /// 月份取当周周一的（跨月周按周一所在月）。
+    private var monthNumber: Int {
+        let cal = Calendar(identifier: .gregorian)
+        let offset = (week - 1) * 7
+        guard let monday = cal.date(byAdding: .day, value: offset, to: termStartDate) else { return 0 }
+        return cal.component(.month, from: monday)
+    }
+
     var body: some View {
         HStack(spacing: 0) {
-            // build 56（专家二诊，治本）：Color.clear 宽高双向贪婪，没锁高度会在
-            // safeAreaInset / VStack 里把提议的高度全吃掉，撑爆顶栏。锁死 height: 1。
-            Color.clear.frame(width: 46, height: 1)
+            // build 82：照 WakeUp，左侧空位显示当周月份（数字 + “月”上下两行），
+            // 和网格左侧节次栏同宽（46），星期列才和网格的 7 天列对齐。
+            // 原先这里是 Color.clear 占位（build 56 锁 height: 1 防撑爆）；现在换成
+            // 有固定内容的 VStack，不再是贪婪的 Color.clear，不会撑爆顶栏。
+            VStack(spacing: 1) {
+                Text("\(monthNumber)")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(headerColor)
+                Text("月")
+                    .font(.system(size: 11))
+                    .foregroundStyle(headerColor.opacity(0.6))
+            }
+            .frame(width: 46)
+            .padding(.vertical, 4)
             ForEach(visibleWeekdays, id: \.self) { weekday in
                 let i = weekday - 1
                 let today = isCurrentWeek && (i + 1) == todayIndex
