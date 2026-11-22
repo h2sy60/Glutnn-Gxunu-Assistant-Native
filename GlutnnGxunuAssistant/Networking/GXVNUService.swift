@@ -440,7 +440,15 @@ enum GXVNUService {
         var lastError: Error = ScheduleError.parseError
         for target in targets {
             do {
-                let (data, _) = try await client.postForm(
+                // build 83：会话过期会被误报成“课表解析失败”（2026-11-22 日志）：
+                // 过期会话调课表接口，服务器返回 302 跳转（网络层不跟跳转，拿到
+                // 0 字节空包）或无 kbList 的响应；旧代码只认登录页 HTML 才算
+                // 会话过期，空包/无 kbList 都认不出来，当 JSON 解析失败报 parseError，
+                // 而 refreshSchedule 只在 sessionExpired 时才重登+重试，于是
+                // 一直刷一直失败。302/空包/无 kbList 不可能是一份有效课表，
+                // 一律按 sessionExpired 抛，走重登+重试；正常课表（200 + 带 kbList
+                // 的 JSON）完全不动。
+                let (data, response) = try await client.postForm(
                     target,
                     form: params,
                     headers: [
@@ -449,12 +457,16 @@ enum GXVNUService {
                         "Accept": "application/json, text/javascript, */*; q=0.01",
                     ]
                 )
+                if (300..<400).contains(response.statusCode) { throw ScheduleError.sessionExpired }
+                if data.isEmpty { throw ScheduleError.sessionExpired }
                 let body = String(data: data, encoding: .utf8) ?? ""
                 if isLoginPage(body) { throw ScheduleError.sessionExpired }
-                guard let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let kbList = decoded["kbList"] as? [[String: Any]] else {
+                guard let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                     lastError = ScheduleError.parseError
                     continue
+                }
+                guard let kbList = decoded["kbList"] as? [[String: Any]] else {
+                    throw ScheduleError.sessionExpired
                 }
                 // 姓名藏在课表响应的 xsxx.XM 里。
                 if let xsxx = decoded["xsxx"] as? [String: Any] {
