@@ -332,7 +332,12 @@ struct ScheduleView: View {
         // 课表是白底黑字的亮色页：整页用亮色模式，导出/日期玻璃药丸才是
         // 原版那种浅色玻璃；整 App 强制深色模式会让它俩变成深灰玻璃，丑。
         .preferredColorScheme(.light)
-        .onAppear { displayWeek = appState.currentWeek }
+        // build 85：进课表页先重算当前周（App 在后台跨了周，currentWeek 还是
+        // 旧值；2026-11-23 周一仍显示第 11 周），再把 displayWeek 指过去。
+        .onAppear {
+            appState.refreshCurrentWeek()
+            displayWeek = appState.currentWeek
+        }
         // 换校时 displayWeek 跟着新学校的当前周走（配合 TabView 的 .id 重建，build 42）。
         .onChange(of: appState.school.id) { _, _ in
             displayWeek = appState.currentWeek
