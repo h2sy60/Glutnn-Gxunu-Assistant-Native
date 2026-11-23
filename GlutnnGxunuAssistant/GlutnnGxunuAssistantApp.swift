@@ -104,6 +104,7 @@ struct WallpaperBackground: View {
 @main
 struct GlutnnGxunuAssistantApp: App {
     @State private var appState = AppState()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -131,6 +132,15 @@ struct GlutnnGxunuAssistantApp: App {
             .task {
                 // 启动恢复：有已存账号就自动登录（职师院直接进，桂工预填 + 取验证码图）。
                 await appState.tryAutoLogin()
+            }
+            // build 85：回到前台时重算当前周——currentWeek 只在启动/切校/
+            // 改学期设置时算一次就缓存，App 在后台跨了周（2026-11-23 周一
+            // 仍显示第 11 周）就一直错下去；日期胶囊是现算的，所以它对、
+            // 周数和星期条错。回前台就重算，首页 + 课表都跟着对。
+            .onChange(of: scenePhase) { _, newPhase in
+                if newPhase == .active {
+                    appState.refreshCurrentWeek()
+                }
             }
         }
     }
