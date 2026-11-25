@@ -20,7 +20,7 @@ enum GXVNUService {
     private static var client: NetworkClient { .shared }
 
     /// 课表响应里顺带取到的学生姓名（xsxx.XM），供 AppState 显示。
-    nonisolated(unsafe) static var lastStudentName: String?
+    private static let stateLock = NSLock(); private nonisolated(unsafe) static var _lastStudentName: String?; static var lastStudentName: String? { get { stateLock.withLock { _lastStudentName } } set { stateLock.withLock { _lastStudentName = newValue } } }
 
     /// 取验证码图那次登录页的 csrftoken / mmsfjm / JSESSIONID。
     /// 验证码跟取图时的会话绑定；登录 POST 必须用同一个会话的 csrftoken，
@@ -28,9 +28,9 @@ enum GXVNUService {
     /// build 66：有验证码时复用这三个值，不再先 GET 登录页——那次 GET
     /// 可能轮换 JSESSIONID，让验证码作废（点了“继续”却永远提示重新输入，
     /// Russell 2026-11-19 09:14 报的 bug）。取图时存，登录时复用。
-    nonisolated(unsafe) static var captchaCsrfToken: String?
-    nonisolated(unsafe) static var captchaMmsfjm: String?
-    nonisolated(unsafe) static var captchaSessionId: String?
+    private nonisolated(unsafe) static var _captchaCsrfToken: String?; static var captchaCsrfToken: String? { get { stateLock.withLock { _captchaCsrfToken } } set { stateLock.withLock { _captchaCsrfToken = newValue } } }
+    private nonisolated(unsafe) static var _captchaMmsfjm: String?; static var captchaMmsfjm: String? { get { stateLock.withLock { _captchaMmsfjm } } set { stateLock.withLock { _captchaMmsfjm = newValue } } }
+    private nonisolated(unsafe) static var _captchaSessionId: String?; static var captchaSessionId: String? { get { stateLock.withLock { _captchaSessionId } } set { stateLock.withLock { _captchaSessionId = newValue } } }
 
     /// 模拟 iPhone Safari 的 UA（Flutter 版实测：Dart 默认 UA 会被
     /// 正方当成非浏览器请求、轮换会话）。
@@ -49,7 +49,7 @@ enum GXVNUService {
 
     /// V9.0 没有 401：业务响应是登录页 = 会话已过期。
     private static func isLoginPage(_ body: String) -> Bool {
-        body.contains("login_slogin") || body.contains("用户登录") || body.contains("csrftoken")
+        body.contains("login_slogin") || body.contains("用户登录") || body.contains("csrftoken") || body.contains("请重新登录") || body.contains("登录超时") || body.contains("会话已过期")
     }
 
     private static func extract(_ html: String, pattern: String) -> String? {
@@ -368,11 +368,6 @@ enum GXVNUService {
         if response.statusCode == 200 {
             let bodyText = String(data: responseData, encoding: .utf8) ?? ""
             let tips = tipsText(bodyText)
-            if tips.contains("验证码") || bodyText.contains("name=\"yzm\"") {
-                clearSession()
-                AppLogger.shared.log("GXVNU login captchaRequired (200)")
-                return .captchaRequired
-            }
             clearSession()
             AppLogger.shared.log("GXVNU login failure (200): \(tips)")
             // 只有 tips 明确说密码不对才报密码错；锁定/次数原样返回；
@@ -384,6 +379,11 @@ enum GXVNUService {
             }
             if tips.contains("锁定") || tips.contains("次数") {
                 return .failure(tips)
+            }
+            if tips.contains("验证码") || bodyText.contains("name=\"yzm\"") {
+                clearSession()
+                AppLogger.shared.log("GXVNU login captchaRequired (200)")
+                return .captchaRequired
             }
             if !tips.isEmpty {
                 return .failure(tips)
@@ -466,7 +466,7 @@ enum GXVNUService {
                     continue
                 }
                 guard let kbList = decoded["kbList"] as? [[String: Any]] else {
-                    throw ScheduleError.sessionExpired
+                    lastError = ScheduleError.sessionExpired; continue
                 }
                 // 姓名藏在课表响应的 xsxx.XM 里。
                 if let xsxx = decoded["xsxx"] as? [String: Any] {
@@ -563,7 +563,7 @@ enum GXVNUService {
         return CourseScore(
             courseCode: pick(["kch", "kch_id"]),
             courseName: courseName,
-            teacher: pick(["jsxm", "xm", "jsmc"]),
+            teacher: pick(["jsxm", "jsmc"]),
             score: Double(levelToNumber(rawScore)) ?? 0,
             rawScore: rawScore,
             gradePoint: Double(pick(["jd"])) ?? 0,
@@ -615,10 +615,10 @@ enum GXVNUService {
             throw ScheduleError.network("考试接口返回 HTTP \(response.statusCode)")
         }
         let text = String(data: data, encoding: .utf8) ?? ""
-        if isLoginPage(text) { throw ScheduleError.sessionExpired }
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isLoginPage(text) { throw ScheduleError.sessionExpired }
         guard let decoded = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let items = decoded["items"] as? [[String: Any]] else {
-            throw ScheduleError.parseError
+            throw ScheduleError.customParseError("考试数据解析失败")
         }
         return items.compactMap { item in
             let name = (item["kcmc"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -945,7 +945,7 @@ enum GXVNUService {
                   let m = regex.firstMatch(in: plain, range: NSRange(plain.startIndex..., in: plain)),
                   m.numberOfRanges >= 2,
                   let r = Range(m.range(at: 1), in: plain) else { return "" }
-            return String(plain[r])
+            let val = String(plain[r]); return val.contains("：") ? "" : val
         }
         let majorRaw = field("专业名称")  // 如“工程造价（普专本）(0509)”
         var majorCode = ""

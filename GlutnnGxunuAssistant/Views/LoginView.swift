@@ -15,6 +15,7 @@ struct LoginView: View {
         case studentId, password, captcha
     }
     @FocusState private var focusedField: Field?
+    @State private var cachedCaptchaImage: UIImage?
 
     /// 玻璃输入框容器（图标 + 内容），和 Flutter 的玻璃框一个意思。
     private func glassField<Content: View>(icon: String, @ViewBuilder content: () -> Content) -> some View {
@@ -44,7 +45,7 @@ struct LoginView: View {
                     .onTapGesture {
                         focusedField = nil
                     }
-
+            ScrollView {
                 VStack(spacing: 20) {
                     // 学校名（44pt 白字 + 阴影）+ 右上角关闭钮（旧版登录页同款：点 X 回首页，不用登录也能看）。
                     HStack(alignment: .center) {
@@ -94,6 +95,7 @@ struct LoginView: View {
                                 appState.school.id == school.id ? Color.white : Color.clear,
                                 in: RoundedRectangle(cornerRadius: 10)
                             )
+                               .disabled(appState.loginLoading)                     
                         }
                     }
                     .padding(4)
@@ -123,7 +125,13 @@ struct LoginView: View {
                             .autocorrectionDisabled()
                             .focused($focusedField, equals: .password)
                             .onSubmit {
-                                Task { await appState.login() }
+                               guard !appState.loginLoading else { return }
+                                if appState.showCaptcha {
+                                    focusedField = .captcha
+                                    } else {
+                                    focusedField = nil
+                                    Task { await appState.login() }
+                                }
                             }
                             .foregroundStyle(.white)
                         }
@@ -131,8 +139,7 @@ struct LoginView: View {
                         // 验证码（桂工每次都要；职师院按需）
                         if appState.showCaptcha {
                             HStack(spacing: 12) {
-                                if let data = appState.captchaImageData,
-                                   let uiImage = UIImage(data: data) {
+                                if let uiImage = cachedCaptchaImage {
                                     Image(uiImage: uiImage)
                                         .resizable()
                                         .scaledToFit()
@@ -159,6 +166,11 @@ struct LoginView: View {
                                 .keyboardType(.asciiCapable)
                                 .focused($focusedField, equals: .captcha)
                                 .foregroundStyle(.white)
+                                .onSubmit {
+                                    guard !appState.loginLoading else { return }
+                                    focusedField = nil
+                                    Task { await appState.login() }
+                                }
                             }
                             .padding(.horizontal, 14)
                             .padding(.vertical, 12)
@@ -197,11 +209,10 @@ struct LoginView: View {
                 .padding(.horizontal, 20)
                 // 高度定死为 geo.size.height：键盘弹起时 geo.size 不变，
                 // 内容钉在顶部，键盘只从底部盖上来。
-                .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
+                .frame(width: geo.size.width, alignment: .top)
+            }
             }
         }
-        // 在 GeometryReader 外层忽略键盘安全区，确保 geo.size.height 永远不变。
-        .ignoresSafeArea(.keyboard, edges: .bottom)
         .task {
             // 桂工默认要验证码，进页就取一张。
             if appState.school.captchaRequired && appState.captchaImageData == nil {
@@ -215,7 +226,11 @@ struct LoginView: View {
                 dismiss()
             }
         }
+    .onAppear {
+        cachedCaptchaImage = appState.captchaImageData.flatMap { UIImage(data: $0)
     }
+        .onChange(of: appState.captchaImageData) { _, newData in
+                                                  cachedCaptchaImage = newData.flatMap { UIImage(data: $0)
 }
 
 #Preview {

@@ -16,7 +16,8 @@ struct HomeView: View {
     @State private var refreshClickCount = 0
     @State private var refreshCooldown = false
     /// 正在分段刷新时，再来的刷新请求直接跳过（防重叠）。
-    @State private var isRefreshing = false
+    @State private var isRefreshing = false 
+    @State private var hasAttemptedExamsLoad = false
     /// 首页显示开关（build 63 首页设置）：用 @AppStorage 读同一个键，
     /// 设置页一改首页立即重绘（AppSettings 不是 Observable，直接读不会刷新）。
     @AppStorage("ShowRecentExams") private var showRecentExams = true
@@ -35,9 +36,10 @@ struct HomeView: View {
             .filter { $0.weekday == todayWeekday && $0.weeks.contains(appState.currentWeek) }
             .sorted { $0.startSection < $1.startSection }
     }
-    private var tomorrowCourses: [Course] {
-        appState.courses
-            .filter { $0.weekday == tomorrowWeekday && $0.weeks.contains(appState.currentWeek) }
+    private var tomorrowCourses: [Course] { 
+        let tomorrowWeek = todayWeekday == 7 ? appState.currentWeek + 1 : appState.currentWeek
+        return appState.courses
+            .filter { $0.weekday == tomorrowWeekday && $0.weeks.contains(tomorrowWeek) }
             .sorted { $0.startSection < $1.startSection }
     }
 
@@ -55,7 +57,7 @@ struct HomeView: View {
 
     /// 一节课（原版 todaySchedule 是按节展开的：跨两节的课占两行，每节自己的开始/结束时间与状态）。
     private struct DaySection: Identifiable {
-        let id: Int
+        let id: String
         let course: Course
         let section: Int
     }
@@ -63,18 +65,20 @@ struct HomeView: View {
     /// 今天的每一节（按节次展开并排序）。
     private var todaySections: [DaySection] {
         var out: [DaySection] = []
-        for c in todayCourses {
+        for c in todayCourses { 
+            guard c.startSection >= 1, c.startSection <= c.endSection else { continue }
             for s in c.startSection...c.endSection {
-                out.append(DaySection(id: s, course: c, section: s))
+                out.append(DaySection(id: "\(s)-\(c.name)-\(c.location)", course: c, section: s))
             }
         }
         return out.sorted { $0.section < $1.section }
     }
     private var tomorrowSections: [DaySection] {
         var out: [DaySection] = []
-        for c in tomorrowCourses {
+        for c in tomorrowCourses { 
+            guard c.startSection >= 1, c.startSection <= c.endSection else { continue }
             for s in c.startSection...c.endSection {
-                out.append(DaySection(id: s, course: c, section: s))
+                out.append(DaySection(id: "\(s)-\(c.name)-\(c.location)", course: c, section: s))
             }
         }
         return out.sorted { $0.section < $1.section }
@@ -137,9 +141,12 @@ struct HomeView: View {
         let list = appState.school.effectiveEndTimeList
         guard section >= 1, section <= list.count else { return (0, 0) }
         return list[section - 1]
-    }
+    } 
+    
 
-    private func timeRange(section: Int) -> String {
+    private func timeRange(section: Int) -> String 
+    { 
+        guard section >= 1, section <= appState.school.effectiveStartTimeList.count, section <= appState.school.effectiveEndTimeList.count else { return "--:-- - --:--" }
         let s = startTime(of: section)
         let e = endTime(of: section)
         return String(format: "%02d:%02d - %02d:%02d", s.0, s.1, e.0, e.1)
@@ -151,10 +158,10 @@ struct HomeView: View {
     /// dayOffset：0 = 今天，1 = 明天。明天的课还没发生，直接返回 before，
     /// 不拿今天的时间去比——不然明天的第 1–5 节（12:00 前结束）按今天
     /// 14:48 算全是“已结束”，全打勾（Russell 2026-11-18 14:48）。
-    private func sectionStatus(section: Int, dayOffset: Int = 0) -> (text: String, state: String) {
-        if dayOffset > 0 { return ("", "before") }
+    private func sectionStatus(section: Int, dayOffset: Int = 0, now: Date = Date()) -> (text: String, state: String) {
+        if dayOffset > 0 { return ("", "before") } 
+        guard section >= 1, section <= appState.school.effectiveStartTimeList.count, section <= appState.school.effectiveEndTimeList.count else { return ("", "before") }
         let cal = Calendar(identifier: .gregorian)
-        let now = Date()
         let nowMin = cal.component(.hour, from: now) * 60 + cal.component(.minute, from: now)
         let s = startTime(of: section)
         let e = endTime(of: section)
@@ -177,15 +184,15 @@ struct HomeView: View {
 
     /// 某行右边显示的状态文案（原版 lists.dart 同款规则）：
     /// 上一行的文案里有“后”（正在倒计时），这一行就不显示，免得满屏都是倒计时。
-    private func statusTextForRow(at index: Int, in sections: [DaySection]) -> String {
+    private func statusTextForRow(at index: Int, in sections: [DaySection], now: Date = Date()) -> String {
         // build 74：越界保护——切学校时 todaySections 会重算，ForEach 枚举的
         // 快照和这里传进来的数组可能不一致，下标越界会直接 trap 闪退
         // （2026-11-19 崩溃报告：HomeView.statusTextForRow，EXC_BREAKPOINT）。
         // 越界就返回空文案，绝不闪退。
         guard index >= 0, index < sections.count else { return "" }
-        let (text, _) = sectionStatus(section: sections[index].section)
+        let (text, _) = sectionStatus(section: sections[index].section, now: now)
         if index > 0 {
-            let (prevText, _) = sectionStatus(section: sections[index - 1].section)
+            let (prevText, _) = sectionStatus(section: sections[index - 1].section, now: now)
             if prevText.contains("后") { return "" }
         }
         return text
@@ -307,8 +314,9 @@ struct HomeView: View {
         isRefreshing = true
         defer { isRefreshing = false }
         appState.showToast(.loading, "准备更新...", duration: 10)
-        try? await Task.sleep(for: .seconds(1))
-        appState.showToast(.loading, "连接教务...", duration: 10)
+        try? await Task.sleep(for: .seconds(1)) 
+        guard !Task.isCancelled else { return }
+   
         appState.showToast(.loading, "获取课表...", duration: 10)
         let wasLoggedIn = appState.isLoggedIn
         await appState.refreshSchedule()
@@ -316,7 +324,7 @@ struct HomeView: View {
             // 验证码弹窗已弹（职师院两次都要求验证码）：等用户输码，
             // 结果提示条由 confirmCaptchaDialog 发，这里不发任何提示条。
         } else if appState.scheduleError == nil {
-            appState.showToast(.loading, "处理数据...", duration: 10)
+)
             appState.showToast(.success, "数据已更新!", duration: 1)
         } else if wasLoggedIn {
             // build 67：只有真是会话过期才弹“需要验证”走验证码弹窗；
@@ -348,12 +356,15 @@ struct HomeView: View {
                 appState.showToast(.error, "你慢一点!")
                 Task {
                     try? await Task.sleep(for: .seconds(5))
-                    refreshClickCount = 0
+                   guard !Task.isCancelled else { return }
+                    refreshClickCount = 0 
+                    
                     refreshCooldown = false
                 }
             }
             return
         }
+        guard !isRefreshing else { return }
         await performStagedRefresh()
         refreshClickCount = 0
     }
@@ -535,7 +546,7 @@ struct HomeView: View {
                         .foregroundStyle(.white)
                         .padding(.top, 24)
                         .padding(.horizontal, 20)
-
+                    TimelineView(.periodic(from: .now, by: 60)) { context in
                     if today.isEmpty {
                         Text("今天没有课")
                             .font(.system(size: 15))
@@ -545,7 +556,7 @@ struct HomeView: View {
                     } else {
                         VStack(spacing: 0) {
                             ForEach(Array(today.enumerated()), id: \.element.id) { index, daySection in
-                                sectionRow(daySection, statusText: statusTextForRow(at: index, in: today))
+                                sectionRow(daySection, statusText: statusTextForRow(at: index, in: today, now: context.date))
                                 if daySection.id != today.last?.id {
                                     Divider().background(Color.white.opacity(0.15))
                                 }
@@ -553,7 +564,8 @@ struct HomeView: View {
                         }
                         .padding(.horizontal, 20)
                     }
-
+                                                                }
+                    
                     // 明日课程（build 63 首页设置可关）
                     if showTomorrowCourses {
                         Text("明日课程")
@@ -604,8 +616,9 @@ struct HomeView: View {
             .task {
                 // 近期考试条要数据：登录后、还没拉过考试时静默拉一次。
                 // 失败也不弹提示，条子不出现就是了。
-                if appState.isLoggedIn, appState.exams.isEmpty, appState.examsError == nil {
-                    await appState.refreshExams()
+                    if appState.isLoggedIn, !hasAttemptedExamsLoad, appState.exams.isEmpty, appState.examsError == nil {
+                                                                                                                        hasAttemptedExamsLoad = true
+                        await appState.refreshExams()
                 }
                 // build 63 通用设置：启动时自动刷新（默认关；Russell 2026-11-18
                 // 定手动刷新为主，这个开关默认关，不改现有行为）。

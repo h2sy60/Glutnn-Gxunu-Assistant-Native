@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 // MARK: - 联网层：URLSession 封装，手动管理 Cookie，不自动跟随重定向
 //
@@ -56,17 +57,59 @@ final class CookieJar: @unchecked Sendable {
     private var store: [String: [String: String]] = [:]
     private let lock = NSLock()
     private let storageKey = "PersistedCookieJar_v1"
-
+    private let keychainService = Bundle.main.bundleIdentifier ?? "GlutnnGxunuAssistant.CookieJar"
+    
     init() {
-        if let saved = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: [String: String]] {
+        if let saved = loadFromKeychain() {
+                                           store = saved
+            } else if let saved = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: [String: String]] {
             store = saved
+            if saveToKeychain(saved) {
+         UserDefaults.standard.removeObject(forKey: storageKey)
+            }
         }
     }
 
     private func persistLocked() {
-        UserDefaults.standard.set(store, forKey: storageKey)
+        saveToKeychain(store)
+    }
+    private func loadFromKeychain() -> [String: [String: String]]? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: storageKey,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        guard status == errSecSuccess, let data = item as? Data else { return nil }
+        return try? JSONDecoder().decode([String: [String: String]].self, from: data)
     }
 
+    @discardableResult
+    private func saveToKeychain(_ cookies: [String: [String: String]]) -> Bool {
+        guard let data = try? JSONEncoder().encode(cookies) else { return false }
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: storageKey
+        ]
+        let attributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        ]
+        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if status == errSecSuccess { return true }
+        if status == errSecItemNotFound {
+            var addQuery = query
+            addQuery[kSecValueData as String] = data
+            addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
+        }
+        return false
+    }
+    
     /// 该 host 的 Cookie 头（"a=1; b=2"），没有则返回 nil。
     func header(for url: URL) -> String? {
         guard let host = url.host?.lowercased() else { return nil }
@@ -185,8 +228,9 @@ final class NetworkClient: @unchecked Sendable {
     func postForm(_ url: URL, form: [String: String], headers: [String: String] = [:]) async throws -> (Data, HTTPURLResponse) {
         var allHeaders = headers
         allHeaders["Content-Type"] = "application/x-www-form-urlencoded"
+        let formAllowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
         let bodyString = form
-            .map { "\($0.key.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.value)" }
+            .map { "\($0.key.addingPercentEncoding(withAllowedCharacters: formAllowed) ?? $0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: formAllowed) ?? $0.value)" }
             .joined(separator: "&")
         return try await post(url, body: bodyString.data(using: .utf8), headers: allHeaders)
     }

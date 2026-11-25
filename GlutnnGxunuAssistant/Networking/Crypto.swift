@@ -88,7 +88,7 @@ private func secKey(modulusBase64: String, exponentBase64: String) -> SecKey? {
     let attributes: [String: Any] = [
         kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
         kSecAttrKeyClass as String: kSecAttrKeyClassPublic,
-        kSecAttrKeySizeInBits as String: 1024,
+        kSecAttrKeySizeInBits as String: max(modulus.count * 8, 1024),
     ]
     var error: Unmanaged<CFError>?
     guard let key = SecKeyCreateWithData(der as CFData, attributes as CFDictionary, &error) else {

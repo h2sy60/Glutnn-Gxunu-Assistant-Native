@@ -21,7 +21,8 @@ import SwiftUI
 struct WallpaperBackground: View {
     private let wallpaper: Int
     private let customVersion: Int
-
+    @State private var cachedImage: UIImage?
+    
     init(wallpaper: Int, customVersion: Int) {
         self.wallpaper = wallpaper
         self.customVersion = customVersion
@@ -33,7 +34,7 @@ struct WallpaperBackground: View {
     /// 默认照片壁纸（校园黄昏）。自定义图没存过时也退回它。
     private var defaultPhotoBackground: some View {
         Group {
-            if let data = wallpaperImageData(), let uiImage = UIImage(data: data) {
+           if let uiImage = cachedImage {
                 Image(uiImage: uiImage)
                     .resizable()
                     .scaledToFill()
@@ -69,7 +70,12 @@ struct WallpaperBackground: View {
             .clipped()
             .allowsHitTesting(false)
             .ignoresSafeArea()
-    }
+        .task(id: "\(currentWallpaper)-\(currentVersion)") {
+            let targetWallpaper = currentWallpaper
+            let decoded = await Task.detached(priority: .userInitiated) { Self.decodeWallpaper(for: targetWallpaper) }.value
+            if !Task.isCancelled { cachedImage = decoded }
+        }    
+        }
 
     @ViewBuilder
     private var wallpaperLayer: some View {
@@ -87,18 +93,17 @@ struct WallpaperBackground: View {
         case 3:
             Color(red: 0.03, green: 0.03, blue: 0.04)
         case 4:
-            if let data = customWallpaperData(), let uiImage = UIImage(data: data) {
-                Image(uiImage: uiImage)
-                    .resizable()
-                    .scaledToFill()
-            } else {
-                defaultPhotoBackground
-            }
+           defaultPhotoBackground
         default:
             defaultPhotoBackground
         }
     }
-}
+    nonisolated private static func decodeWallpaper(for targetWallpaper: Int) -> UIImage? {
+        if targetWallpaper == 1 || targetWallpaper == 2 || targetWallpaper == 3 { return nil }
+        if targetWallpaper == 4, let data = customWallpaperData(), let image = UIImage(data: data) { return image }
+        return wallpaperImageData().flatMap { UIImage(data: $0) }
+    }    
+    }
 
 /// Glutnn-Gxunu-Assistant 原生重建入口。
 @main

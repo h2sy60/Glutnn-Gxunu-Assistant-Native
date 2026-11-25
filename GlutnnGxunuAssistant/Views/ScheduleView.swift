@@ -101,6 +101,7 @@ import EventKit // 导出到日历（EventKit）：建日历、写课程事件�
 struct ScheduleView: View {
     @Environment(AppState.self) private var appState
     @State private var displayWeek: Int = 0
+    @State private var hasInitializedWeek = false
     @State private var showExportPage = false
     /// 点中的课程块（start/end 是合并后的节次范围），非空时弹课程详情。
     @State private var selectedBlock: (start: Int, end: Int, course: Course)?
@@ -336,11 +337,14 @@ struct ScheduleView: View {
         // 旧值；2026-11-23 周一仍显示第 11 周），再把 displayWeek 指过去。
         .onAppear {
             appState.refreshCurrentWeek()
-            displayWeek = appState.currentWeek
+            if !hasInitializedWeek {
+                displayWeek = min(max(appState.currentWeek, 1), 20)
+                hasInitializedWeek = true
+            }
         }
         // 换校时 displayWeek 跟着新学校的当前周走（配合 TabView 的 .id 重建，build 42）。
         .onChange(of: appState.school.id) { _, _ in
-            displayWeek = appState.currentWeek
+            displayWeek = min(max(appState.currentWeek, 1), 20)
         }
         .fullScreenCover(isPresented: $showExportPage) {
             ScheduleExportView()
@@ -383,8 +387,11 @@ struct WeekDateStrip: View {
     /// 该周某天的日期号（1...31）。
     private func dayNumber(for weekday: Int) -> Int {
         let cal = Calendar(identifier: .gregorian)
+        let startWeekday = cal.component(.weekday, from: termStartDate)
+        let daysFromMonday = (startWeekday + 5) % 7
+        let alignedMonday = cal.date(byAdding: .day, value: -daysFromMonday, to: termStartDate) ?? termStartDate
         let offset = (week - 1) * 7 + (weekday - 1)
-        guard let date = cal.date(byAdding: .day, value: offset, to: termStartDate) else { return 0 }
+        guard let date = cal.date(byAdding: .day, value: offset, to: alignedMonday) else { return 0 }
         return cal.component(.day, from: date)
     }
 
@@ -392,8 +399,11 @@ struct WeekDateStrip: View {
     /// 月份取当周周一的（跨月周按周一所在月）。
     private var monthNumber: Int {
         let cal = Calendar(identifier: .gregorian)
+        let startWeekday = cal.component(.weekday, from: termStartDate)
+        let daysFromMonday = (startWeekday + 5) % 7
+        let alignedMonday = cal.date(byAdding: .day, value: -daysFromMonday, to: termStartDate) ?? termStartDate
         let offset = (week - 1) * 7
-        guard let monday = cal.date(byAdding: .day, value: offset, to: termStartDate) else { return 0 }
+        guard let monday = cal.date(byAdding: .day, value: offset, to: alignedMonday) else { return 0 }
         return cal.component(.month, from: monday)
     }
 
@@ -469,7 +479,7 @@ private let coursePalette: [Color] = [
 private func courseColor(for name: String) -> Color {
     var hash = 0
     for scalar in name.unicodeScalars { hash = (hash &* 31) &+ Int(scalar.value) }
-    return coursePalette[abs(hash) % coursePalette.count]
+    return coursePalette[(hash & 0x7fffffff) % coursePalette.count]
 }
 
 /// 把两个颜色按比例混合（取 RGB 平均，保留第一个颜色的透明度）。
@@ -617,12 +627,16 @@ struct ScheduleGrid: View {
                         .font(.system(size: 13, weight: .bold))
                         .foregroundStyle(.black.opacity(0.85))
                     if appearance.showSectionTime {
-                        Text(timeText(school.effectiveStartTimeList[s]))
-                            .font(.system(size: 9))
-                            .foregroundStyle(.black.opacity(0.45))
-                        Text(timeText(school.effectiveEndTimeList[s]))
-                            .font(.system(size: 9))
-                            .foregroundStyle(.black.opacity(0.45))
+                        if school.effectiveStartTimeList.indices.contains(s) {
+                            Text(timeText(school.effectiveStartTimeList[s]))
+                                .font(.system(size: 9))
+                                .foregroundStyle(.black.opacity(0.45))
+                        }
+                        if school.effectiveEndTimeList.indices.contains(s) {
+                            Text(timeText(school.effectiveEndTimeList[s]))
+                                .font(.system(size: 9))
+                                .foregroundStyle(.black.opacity(0.45))
+                        }
                     }
                 }
                 .frame(width: gutter - 6, alignment: .center)
@@ -630,7 +644,8 @@ struct ScheduleGrid: View {
             }
             // 课程块（按天分组，已合并连续节次；用开始节次做 id，同一门课分两段上时 id 不会撞）
             ForEach(visibleWeekdays, id: \.self) { weekday in
-                ForEach(blocks(for: weekday), id: \.start) { block in
+                ForEach(blocks(for: weekday).map { (block: $0, uniqueKey: "\($0.start)-\($0.end)-\($0.course.name)-\($0.isCurrentWeek)") }, id: \.uniqueKey) { item in
+                    let block = item.block
                     let x = gutter + CGFloat(columnIndex(for: weekday)) * columnWidth + 2
                     let y = CGFloat(block.start - 1) * rowHeight + 2
                     let w = columnWidth - 4
@@ -648,7 +663,7 @@ struct ScheduleGrid: View {
                     let border = appearance.borderUsesBlockColor ? blockColor : appearance.borderColor
                     VStack(alignment: appearance.textHorizontalCenter ? .center : .leading, spacing: 2) {
                         if appearance.textVerticalCenter { Spacer() }
-                        if appearance.showStartTime {
+                        if appearance.showStartTime, school.effectiveStartTimeList.indices.contains(block.start - 1) {
                             Text(timeText(school.effectiveStartTimeList[block.start - 1]))
                                 .font(.system(size: 11, weight: .semibold))
                                 .foregroundStyle(text)
@@ -853,34 +868,56 @@ enum CalendarExportResult {
 @MainActor
 struct CalendarExporter {
     /// 某节课在某周的起止时间。termStart = 学期第一周周一。
-    static func occurrenceRange(
+    nonisolated static func occurrenceRange(
         school: SchoolConfig, course: Course, week: Int
     ) -> (start: Date, end: Date)? {
-        let cal = Calendar(identifier: .gregorian)
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
         guard week >= 1, course.weekday >= 1, course.weekday <= 7,
               course.startSection >= 1, course.startSection <= school.sectionCount,
               course.endSection >= course.startSection, course.endSection <= school.sectionCount
         else { return nil }
         // 日期 = 开学周一 + (week-1)*7 天 + (weekday-1) 天。
-        guard let day = cal.date(
-            byAdding: .day,
-            value: (week - 1) * 7 + (course.weekday - 1),
-            to: school.termStartDate
-        ) else { return nil }
-        let (sh, sm) = school.effectiveStartTimeList[course.startSection - 1]
-        let (eh, em) = school.effectiveEndTimeList[course.endSection - 1]
-        guard let start = cal.date(bySettingHour: sh, minute: sm, second: 0, of: day),
-              let end = cal.date(bySettingHour: eh, minute: em, second: 0, of: day)
+        let termStartDay = cal.startOfDay(for: school.termStartDate)
+        let wd = cal.component(.weekday, from: termStartDay)
+        let daysFromMonday = (wd + 5) % 7
+        guard let alignedMonday = cal.date(byAdding: .day, value: -daysFromMonday, to: termStartDay),
+              let day = cal.date(
+                  byAdding: .day,
+                  value: (week - 1) * 7 + (course.weekday - 1),
+                  to: alignedMonday
+              )
+        else { return nil }
+        let startIdx = course.startSection - 1
+        let endIdx = course.endSection - 1
+        let startList = school.effectiveStartTimeList
+        let endList = school.effectiveEndTimeList
+        guard startList.indices.contains(startIdx),
+              endList.indices.contains(endIdx)
+        else { return nil }
+        let (sh, sm) = startList[startIdx]
+        let (eh, em) = endList[endIdx]
+        let baseComps = cal.dateComponents([.year, .month, .day], from: day)
+        var startComps = baseComps
+        startComps.hour = sh
+        startComps.minute = sm
+        startComps.second = 0
+        var endComps = baseComps
+        endComps.hour = eh
+        endComps.minute = em
+        endComps.second = 0
+        guard let start = cal.date(from: startComps),
+              let end = cal.date(from: endComps)
         else { return nil }
         return (start, end)
     }
 
     /// 待导出的 occurrence 总数（Course × weeks）。
-    static func totalOccurrences(courses: [Course]) -> Int {
+    nonisolated static func totalOccurrences(courses: [Course]) -> Int {
         courses.reduce(0) { $0 + $1.weeks.count }
     }
 
-    /// 执行导出。onProgress(done, total) 回到主线程更新进度条。
+    /// 执行导出。await MainActor.run { onProgress(done, total) } 回到主线程更新进度条。
     static func export(
         courses: [Course],
         school: SchoolConfig,
@@ -889,8 +926,9 @@ struct CalendarExporter {
         remindMinutes: Int,
         secondRemind: Bool,
         endRemind: Bool,
-        onProgress: @escaping (Int, Int) -> Void
+        onProgress: @escaping @MainActor (Int, Int) -> Void
     ) async -> CalendarExportResult {
+        return await Task.detached {
         let store = EKEventStore()
         // 权限：要完全读写（删旧日历要读，写事件要写）。已拒绝/受限直接报权限错。
         let status = EKEventStore.authorizationStatus(for: .event)
@@ -902,27 +940,41 @@ struct CalendarExporter {
                 let granted = try await store.requestFullAccessToEvents()
                 if !granted { return .permission }
             } catch {
-                return .permission
+                return .failure("请求日历权限失败：\((error as NSError).localizedDescription)")
             }
         }
         // 删掉所有同名日历（重复导出不越导越多），再新建一本蓝日历。
-        for cal in store.calendars(for: .event) where cal.title == calendarName {
-            try? store.removeCalendar(cal, commit: true)
+        let targetSource: EKSource? = {
+            if let defaultCal = store.defaultCalendarForNewEvents,
+               defaultCal.allowsContentModifications {
+                return defaultCal.source
+            }
+            if let local = store.sources.first(where: { $0.sourceType == .local }) {
+                return local
+            }
+            return store.sources.first(where: {
+                $0.sourceType != .subscribed && $0.sourceType != .birthdays
+            })
+        }()
+        guard let targetSource else {
+            return .failure("未找到可用的可写日历账户，无法创建日历")
+        }
+        for cal in store.calendars(for: .event)
+        where cal.title == calendarName && cal.allowsContentModifications {
+            do {
+                try store.removeCalendar(cal, commit: true)
+            } catch {
+                return .failure("删除旧日历「\(calendarName)」失败：\((error as NSError).localizedDescription)")
+            }
         }
         let calendar = EKCalendar(for: .event, eventStore: store)
         calendar.title = calendarName
         calendar.cgColor = UIColor.blue.cgColor
-        if let source = store.defaultCalendarForNewEvents?.source {
-            calendar.source = source
-        } else if let local = store.sources.first(where: { $0.sourceType == .local }) {
-            calendar.source = local
-        } else if let first = store.sources.first {
-            calendar.source = first
-        }
+        calendar.source = targetSource
         do {
             try store.saveCalendar(calendar, commit: true)
         } catch {
-            return .failure("创建日历失败，请检查日历权限")
+            return .failure("创建日历失败：\((error as NSError).localizedDescription)")
         }
         // 逐条写事件。
         let total = totalOccurrences(courses: courses)
@@ -934,7 +986,7 @@ struct CalendarExporter {
             for week in course.weeks {
                 guard let range = occurrenceRange(school: school, course: course, week: week) else {
                     done += 1
-                    onProgress(done, total)
+                    await MainActor.run { onProgress(done, total) }
                     continue
                 }
                 // 结束 <= 开始是坏数据（Flutter 页上提示的「开始日期必须早于结束日期」）：
@@ -942,7 +994,7 @@ struct CalendarExporter {
                 if range.end <= range.start {
                     if firstError == nil { firstError = "开始日期必须早于结束日期" }
                     done += 1
-                    onProgress(done, total)
+                    await MainActor.run { onProgress(done, total) }
                     continue
                 }
                 let event = EKEvent(eventStore: store)
@@ -965,21 +1017,27 @@ struct CalendarExporter {
                 }
                 event.alarms = alarms.isEmpty ? nil : alarms
                 do {
-                    try store.save(event, span: .thisEvent, commit: true)
+                    try store.save(event, span: .thisEvent, commit: false)
                     exported += 1
                     if endRemind { endAlarmAdded += 1 }
                 } catch {
                     if firstError == nil { firstError = (error as NSError).localizedDescription }
                 }
                 done += 1
-                onProgress(done, total)
+                await MainActor.run { onProgress(done, total) }
                 if done % 10 == 0 { await Task.yield() }
             }
         }
         if exported == 0 {
             return .failure(firstError ?? "写入失败")
         }
+        do {
+            try store.commit()
+        } catch {
+            return .failure("保存日历事件失败：\((error as NSError).localizedDescription)")
+        }
         return .success(exported: exported, endAlarmAdded: endAlarmAdded, total: total)
+        }.value
     }
 }
 
@@ -1203,7 +1261,7 @@ struct ScheduleExportView: View {
             resultTitle = "导出成功"
             var msg = "已写入 \(exported) 节课到系统日历「\(name)」。"
             if endRemind && endAdded < exported {
-                msg += "\n\n注意：下课提醒只加上了 \(endAdded) 节，请检查日历权限。"
+                msg += "\n\n注意：部分下课提醒未能添加（已加上 \(endAdded) 节）。"
             }
             resultMessage = msg
             showResult = true

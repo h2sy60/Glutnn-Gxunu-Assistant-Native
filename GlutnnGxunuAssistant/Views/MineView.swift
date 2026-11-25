@@ -7,7 +7,9 @@ import PhotosUI // 首页设置自定义壁纸：从相册选图（build 69）�
 /// 我的（Flutter 版形态）：壁纸 + 玻璃卡片。
 struct MineView: View {
     @Environment(AppState.self) private var appState
-
+    @State private var showLogoutConfirm = false
+    @State private var showSwitchAccountConfirm = false
+    
     /// 玻璃卡片容器。
     private func glassCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         content()
@@ -51,7 +53,7 @@ struct MineView: View {
                                     }
                                     Spacer()
                                     Button("更换账号") {
-                                        appState.switchAccount()
+                                        showSwitchAccountConfirm = true
                                     }
                                     .font(.subheadline)
                                     .foregroundStyle(.white)
@@ -206,7 +208,7 @@ struct MineView: View {
 
                             // 退出登录
                             Button(role: .destructive) {
-                                appState.logout()
+                                showLogoutConfirm = true
                             } label: {
                                 Text("退出登录")
                                     .foregroundStyle(.white)
@@ -221,6 +223,19 @@ struct MineView: View {
                 }
             }
             .navigationBarHidden(true)
+            .alert("确认退出登录", isPresented: $showLogoutConfirm) {
+                Button("退出登录", role: .destructive) { appState.logout() }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("退出后需要重新登录教务系统。")
+            }
+            .alert("确认更换账号", isPresented: $showSwitchAccountConfirm) {
+                Button("更换账号", role: .destructive) { appState.switchAccount() }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("更换账号将退出当前登录状态。")
+            } 
+            
         }
     }
 }
@@ -257,6 +272,7 @@ struct ScheduleDataView: View {
     /// 初始加载完成才保存（否则 .task 里填初始值也会触发 onChange，
     /// 进页就误写一个开学日期覆盖）。
     @State private var isLoaded = false
+    @State private var isResettingDate = false
 
     var body: some View {
         ZStack {
@@ -284,6 +300,10 @@ struct ScheduleDataView: View {
                 Section {
                     DatePicker("开学日期", selection: $termStartDate, displayedComponents: .date)
                         .onChange(of: termStartDate) { _, newValue in
+                        if isResettingDate {
+                            isResettingDate = false
+                            return
+                        }
                             guard isLoaded else { return }
                             AppSettings.setTermStartDateOverride(newValue, for: appState.school.id)
                             hasTermOverride = true
@@ -297,6 +317,9 @@ struct ScheduleDataView: View {
                         }
                     if hasTermOverride {
                         Button("恢复默认开学日期") {
+                        if termStartDate != appState.school.termStartDate {
+                            isResettingDate = true
+                        }
                             AppSettings.setTermStartDateOverride(nil, for: appState.school.id)
                             termStartDate = appState.school.termStartDate
                             hasTermOverride = false
@@ -653,7 +676,9 @@ struct GeneralSettingsView: View {
         .fileImporter(isPresented: $showingImportPicker, allowedContentTypes: [.json]) { result in
             switch result {
             case .success(let url):
-                let ok = appState.importBackup(from: url)
+                let accessed = url.startAccessingSecurityScopedResource()
+                    defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+                    let ok = appState.importBackup(from: url)
                 importMessage = ok ? "备份已恢复" : "导入失败：文件格式不对"
             case .failure:
                 importMessage = "导入失败：打不开这个文件"
@@ -775,7 +800,7 @@ struct ScoreView: View {
     /// 可选学年：从入学年（2026）到当前年。
     private var availableYears: [Int] {
         let currentYear = Calendar.current.component(.year, from: Date())
-        let startYear = 2026
+        let startYear = currentYear - 5
         guard currentYear >= startYear else { return [startYear] }
         return Array(startYear...currentYear)
     }
@@ -893,7 +918,7 @@ struct ScoreView: View {
                                 // build 63 通用设置：成绩每行显示什么（原始成绩/绩点/数字分）。
                                 Text(scoreRowText(s))
                                     .font(.headline)
-                                    .foregroundStyle(s.score < 60 && s.score > 0 ? .red : .primary)
+                                    .foregroundStyle(s.score < 60 && s.score >= 0 ? .red : .primary)
                             }
                             .padding(.vertical, 4)
                         }
@@ -913,7 +938,7 @@ struct ScoreView: View {
             }
             scores = appState.scores
         }
-        .onChange(of: appState.scores.count) { _, _ in
+        .onChange(of: appState.scores.map { "\($0.id)-\($0.courseName)-\($0.score)-\($0.credit)-\($0.gradePoint)" }) { _, _ in
             scores = appState.scores
         }
         .onChange(of: selectedYear) { _, _ in
@@ -1013,7 +1038,7 @@ struct ExamsView: View {
             }
             exams = appState.exams
         }
-        .onChange(of: appState.exams.count) { _, _ in
+        .onChange(of: appState.exams.map { "\($0.examName)-\($0.time)-\($0.location)-\($0.seatNumber)" }) { _, _ in
             exams = appState.exams
         }
     }
@@ -1171,8 +1196,10 @@ struct AboutView: View {
 
     /// 语义版本比较：latest 是否比 current 新（按 . 分段逐段比数字）。
     private func isNewerVersion(_ latest: String, than current: String) -> Bool {
-        let l = latest.split(separator: ".").compactMap { Int($0) }
-        let c = current.split(separator: ".").compactMap { Int($0) }
+        let cleanLatest = latest.split(separator: "-", maxSplits: 1).first.map(String.init) ?? latest
+        let cleanCurrent = current.split(separator: "-", maxSplits: 1).first.map(String.init) ?? current
+        let l = cleanLatest.split(separator: ".").compactMap { Int($0) }
+        let c = cleanCurrent.split(separator: ".").compactMap { Int($0) }
         for i in 0..<max(l.count, c.count) {
             let lv = i < l.count ? l[i] : 0
             let cv = i < c.count ? c[i] : 0
@@ -1300,6 +1327,7 @@ struct GUTMoreView: View {
 // MARK: - 桂工教学计划（build 58，按旧项目 teachingPlanPage）
 
 struct GUTTeachingPlanView: View {
+    @Environment(AppState.self) private var appState
     @State private var plan: GUTTeachingPlan?
     @State private var isLoading = false
     @State private var errorMessage: String? = nil
@@ -1378,7 +1406,7 @@ struct GUTTeachingPlanView: View {
         isLoading = true
         defer { isLoading = false }
         do {
-            plan = try await GUTService.fetchTeachingPlan()
+            plan = try await appState.performWithAutoRelogin { try await GUTService.fetchTeachingPlan() }
             errorMessage = nil
         } catch let error as ScheduleError {
             errorMessage = error == .sessionExpired ? "登录已过期，请重新登录" : error.errorDescription
@@ -1437,7 +1465,7 @@ struct GUTClassroomQueryView: View {
                     Section {
                         HStack { Spacer(); ProgressView("查询中…"); Spacer() }
                     }
-                } else if let errorMessage, rooms.isEmpty, hasQueried {
+                } else if let errorMessage, rooms.isEmpty {
                     Section {
                         Text(errorMessage)
                             .font(.callout)
@@ -1486,7 +1514,7 @@ struct GUTClassroomQueryView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task {
             // 默认本周、本星期（旧项目：周次取当前周，星期取今天）。
-            selectedWeek = appState.currentWeek
+            selectedWeek = min(max(appState.currentWeek, 1), 20)
             let swiftWeekday = Calendar.current.component(.weekday, from: Date())
             selectedDay = swiftWeekday == 1 ? 7 : swiftWeekday - 1
             await loadBuildings()
@@ -1674,7 +1702,18 @@ struct GUTCareerView: View {
 /// 职师院生涯预估：大学进程 + 全部/专业课程 + 成绩合格/重修补考/在修。
 /// 数据复用毕业进度那套（教学计划 + 计划课程 + 已选课程 + 成绩 + 个人信息里的学制）。
 /// 职师院没有教学计划里的通过/未通过计数，所以底下一行用成绩与在修数据。
+private struct GXVNUCareerCache: Codable {
+    let totalCourseCount: Int
+    let majorCourseCount: Int
+    let passCount: Int
+    let failCount: Int
+    let inProgressCount: Int
+    let grade: Int
+    let schoolingLength: Int
+}
+
 struct GXVNUCareerView: View {
+    @Environment(AppState.self) private var appState
     @State private var totalCourseCount = 0
     @State private var majorCourseCount = 0
     @State private var passCount = 0
@@ -1746,41 +1785,71 @@ struct GXVNUCareerView: View {
 
     private func load() async {
         guard !isLoading else { return }
+        if !hasLoaded, let cached = ModuleDiskCache.load(GXVNUCareerCache.self, schoolId: appState.school.id, account: appState.studentId, key: "gxvnu_career") {
+            totalCourseCount = cached.totalCourseCount
+            majorCourseCount = cached.majorCourseCount
+            passCount = cached.passCount
+            failCount = cached.failCount
+            inProgressCount = cached.inProgressCount
+            grade = cached.grade
+            schoolingLength = cached.schoolingLength
+            hasLoaded = true
+        }
         isLoading = true
         defer { isLoading = false }
         do {
-            let ids = try await GXVNUService.resolveAcademicIDs()
+            let fetched: GXVNUCareerCache? = try await appState.performWithAutoRelogin {
+                let ids = try await GXVNUService.resolveAcademicIDs()
             let plans = try await GXVNUService.fetchTeachingPlan(ids: ids)
             let myPlan = plans.first { $0.majorName == ids.major }
                 ?? plans.first { !$0.majorName.isEmpty && ids.major.contains($0.majorName) }
                 ?? plans.first { !$0.majorName.isEmpty && $0.majorName.contains(ids.major) }
                 ?? plans.first
-            guard let plan = myPlan else {
+            guard let plan = myPlan else { return nil }
+                var totalCount = plan.courseCount
+                let parsedGrade = Int(ids.grade) ?? 0
+                var length = 4
+                // 学制：个人信息里的 duration（如 "4"），取第一个数字，默认 4 年。
+                if let profile = try? await GXVNUService.fetchProfile() {
+                    if let years = profile.duration.range(of: #"\d+"#, options: .regularExpression).flatMap({ Int(profile.duration[$0]) }), years > 0 {
+                        length = years
+                    }
+                }
+            // 专业课程：计划课程里类别含“专业”的。
+            var majorCount = 0
+                if !plan.planId.isEmpty {
+                    let planCourses = try await GXVNUService.fetchPlanCourses(planId: plan.planId)
+                    majorCount = planCourses.filter { $0.category.contains("专业") }.count
+                    if totalCount == 0 { totalCount = planCourses.count }
+                }
+                // 在修（已选课程）。
+                let selected = try await GXVNUService.fetchSelectedCourses()
+                // 通过情况（成绩 >= 60 合格）。
+                let scores = try await GXVNUService.fetchScores(year: nil, term: nil)
+                return GXVNUCareerCache(
+                    totalCourseCount: totalCount,
+                    majorCourseCount: majorCount,
+                    passCount: scores.filter { $0.score >= 60 }.count,
+                    failCount: scores.filter { $0.score < 60 }.count,
+                    inProgressCount: selected.count,
+                    grade: parsedGrade,
+                    schoolingLength: length
+                )
+            }
+            guard let cache = fetched else {
                 errorMessage = "未找到本专业教学计划"
                 return
             }
-            totalCourseCount = plan.courseCount
-            grade = Int(ids.grade) ?? 0
-            // 学制：个人信息里的 duration（如 "4"），取第一个数字，默认 4 年。
-            if let profile = try? await GXVNUService.fetchProfile() {
-                let digits = profile.duration.filter { $0.isNumber }
-                if let years = Int(digits), years > 0 { schoolingLength = years }
-            }
-            // 专业课程：计划课程里类别含“专业”的。
-            if !plan.planId.isEmpty {
-                let planCourses = try await GXVNUService.fetchPlanCourses(planId: plan.planId)
-                majorCourseCount = planCourses.filter { $0.category.contains("专业") }.count
-                if totalCourseCount == 0 { totalCourseCount = planCourses.count }
-            }
-            // 在修（已选课程）。
-            let selected = try await GXVNUService.fetchSelectedCourses()
-            inProgressCount = selected.count
-            // 通过情况（成绩 >= 60 合格）。
-            let scores = try await GXVNUService.fetchScores(year: nil, term: nil)
-            passCount = scores.filter { $0.score >= 60 }.count
-            failCount = scores.filter { $0.score < 60 }.count
+            totalCourseCount = cache.totalCourseCount
+            majorCourseCount = cache.majorCourseCount
+            passCount = cache.passCount
+            failCount = cache.failCount
+            inProgressCount = cache.inProgressCount
+            grade = cache.grade
+            schoolingLength = cache.schoolingLength
             hasLoaded = true
             errorMessage = nil
+            ModuleDiskCache.save(cache, schoolId: appState.school.id, account: appState.studentId, key: "gxvnu_career")
         } catch let error as ScheduleError {
             errorMessage = error == .sessionExpired ? "登录已过期，请重新登录" : error.errorDescription
         } catch {
