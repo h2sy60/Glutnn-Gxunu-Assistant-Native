@@ -230,9 +230,11 @@ struct LoginView: View {
         cachedCaptchaImage = appState.captchaImageData.flatMap { UIImage(data: $0)
     }
         .onChange(of: appState.captchaImageData) { _, newData in
-                                                  cachedCaptchaImage = newData.flatMap { UIImage(data: $0)
+                                                  cachedCaptchaImage = newData.flatMap { UIImage(data: $0) }
 }
-
+    }
+    }
+    
 #Preview {
     LoginView()
         .environment(AppState())
