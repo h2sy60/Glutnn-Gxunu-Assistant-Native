@@ -31,7 +31,7 @@ struct ContentView: View {
             get: { appState.showLoginSheet },
             set: { appState.showLoginSheet = $0 }
         )) {
-            LoginView()
+            LoginView().overlay(alignment: .bottom) { globalToastOverlay }
         }
         // 验证码弹窗（原版 dialog.dart showCaptchaDialog 同款）：居中白卡，
         // 不是整页登录。放在提示条下面一层，提示条（“验证码错误!”）永远盖在最上面。
@@ -41,7 +41,12 @@ struct ContentView: View {
             }
         }
         // 提示条（原版 CustomSnackBar）：玻璃药丸浮在底部、低栏上方，点按执行动作或关掉。
-        .overlay(alignment: .bottom) {
+        .overlay(alignment: .bottom) { globalToastOverlay
+        }
+    }
+    @ViewBuilder
+    private var globalToastOverlay: some View {
+        ZStack {
             if let toast = appState.toast {
                 ToastPill(toast: toast) {
                     appState.handleToastTap()
@@ -60,6 +65,8 @@ struct ContentView: View {
 struct CaptchaDialogView: View {
     @Environment(AppState.self) private var appState
     @FocusState private var captchaFocused: Bool
+    @State private var isRefreshingCaptcha = false
+    @State private var cachedCaptchaImage: UIImage?
 
     var body: some View {
         ZStack {
@@ -96,20 +103,24 @@ struct CaptchaDialogView: View {
                         get: { appState.captchaDialogText },
                         set: { appState.captchaDialogText = $0 }
                     ))
-                    .keyboardType(.numberPad)
+                    .keyboardType(.asciiCapable)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
+                    .submitLabel(.done)
+                    .onSubmit {
+                        guard !appState.captchaChecking else { return }
+                        Task { await appState.confirmCaptchaDialog() }
+                    }
                     .focused($captchaFocused)
                     .foregroundStyle(.black)
-                    if let data = appState.captchaImageData,
-                       let uiImage = UIImage(data: data) {
+                if let uiImage = cachedCaptchaImage {
                         Image(uiImage: uiImage)
                             .resizable()
                             .scaledToFit()
                             .frame(width: 80, height: 25)
                             .clipShape(RoundedRectangle(cornerRadius: 6))
                             .onTapGesture {
-                                Task { await appState.fetchCaptcha() }
+                            refreshCaptcha()
                             }
                     } else {
                         RoundedRectangle(cornerRadius: 6)
@@ -117,7 +128,7 @@ struct CaptchaDialogView: View {
                             .frame(width: 80, height: 25)
                             .overlay(Text("点我刷新").font(.caption).foregroundStyle(.gray))
                             .onTapGesture {
-                                Task { await appState.fetchCaptcha() }
+                            refreshCaptcha()
                             }
                     }
                 }
@@ -167,7 +178,22 @@ struct CaptchaDialogView: View {
             .onTapGesture { }
             .padding(.horizontal, 32)
         }
-        .onAppear { captchaFocused = true }
+        .onAppear {
+            captchaFocused = true
+            cachedCaptchaImage = appState.captchaImageData.flatMap(UIImage.init(data:))
+        }
+        .onChange(of: appState.captchaImageData) { _, newData in
+            cachedCaptchaImage = newData.flatMap(UIImage.init(data:))
+                                                 }
+    }
+
+    private func refreshCaptcha() {
+        guard !isRefreshingCaptcha else { return }
+        isRefreshingCaptcha = true
+        Task {
+            await appState.fetchCaptcha()
+            isRefreshingCaptcha = false
+        }
     }
 }
 
