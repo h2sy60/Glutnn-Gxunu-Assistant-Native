@@ -690,9 +690,10 @@ enum GXVNUService {
                 guard !seg.isEmpty else { continue }
                 if seg.contains("-") {
                     let parts = seg.split(separator: "-")
-                    if let s = Int(parts[0].trimmingCharacters(in: .whitespaces)),
-                       parts.count > 1,
-                       let e = Int(parts[1].trimmingCharacters(in: .whitespaces)) {
+                    if parts.count >= 2,
+                       let s = Int(parts[0].trimmingCharacters(in: .whitespaces)),
+                       let e = Int(parts[1].trimmingCharacters(in: .whitespaces)),
+                       s <= e {
                         sectionRanges.append((s, e))
                     }
                 } else if let single = Int(seg) {
@@ -704,9 +705,10 @@ enum GXVNUService {
                 let jc = ((item["jc"] as? String) ?? "").replacingOccurrences(of: "节", with: "")
                 if jc.contains("-") {
                     let parts = jc.split(separator: "-")
-                    if let s = Int(parts[0].trimmingCharacters(in: .whitespaces)),
-                       parts.count > 1,
-                       let e = Int(parts[1].trimmingCharacters(in: .whitespaces)) {
+                    if parts.count >= 2,
+                       let s = Int(parts[0].trimmingCharacters(in: .whitespaces)),
+                       let e = Int(parts[1].trimmingCharacters(in: .whitespaces)),
+                       s <= e {
                         sectionRanges.append((s, e))
                     }
                 } else if jc.count >= 4 {

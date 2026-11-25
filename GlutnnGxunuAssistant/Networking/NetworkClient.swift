@@ -216,23 +216,23 @@ final class NetworkClient: @unchecked Sendable {
     }
 
     /// POST，body 为表单编码后的 Data（调用方自己拼 body）。
-    func post(_ url: URL, body: Data?, headers: [String: String] = [:]) async throws -> (Data, HTTPURLResponse) {
+    func post(_ url: URL, body: Data?, headers: [String: String] = [:], maxRetries: Int = 0) async throws -> (Data, HTTPURLResponse) {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.httpBody = body
         applyCommonHeaders(&request, headers: headers)
-        return try await perform(request)
+        return try await perform(request, maxRetries: maxRetries)
     }
 
     /// POST，body 为表单字典（按 application/x-www-form-urlencoded 编码）。
-    func postForm(_ url: URL, form: [String: String], headers: [String: String] = [:]) async throws -> (Data, HTTPURLResponse) {
+    func postForm(_ url: URL, form: [String: String], headers: [String: String] = [:], maxRetries: Int = 0) async throws -> (Data, HTTPURLResponse) {
         var allHeaders = headers
         allHeaders["Content-Type"] = "application/x-www-form-urlencoded"
         let formAllowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
         let bodyString = form
             .map { "\($0.key.addingPercentEncoding(withAllowedCharacters: formAllowed) ?? $0.key)=\($0.value.addingPercentEncoding(withAllowedCharacters: formAllowed) ?? $0.value)" }
             .joined(separator: "&")
-        return try await post(url, body: bodyString.data(using: .utf8), headers: allHeaders)
+        return try await post(url, body: bodyString.data(using: .utf8), headers: allHeaders, maxRetries: maxRetries)
     }
 
     // MARK: - 内部
@@ -254,7 +254,7 @@ final class NetworkClient: @unchecked Sendable {
         for attempt in 0...maxRetries {
             if attempt > 0 {
                 let delayNs = UInt64(800_000_000 * attempt) // 0.8s、1.6s
-                try? await Task.sleep(nanoseconds: delayNs)
+                try await Task.sleep(nanoseconds: delayNs)
             }
             var request = baseRequest
             request.timeoutInterval = Self.timeout

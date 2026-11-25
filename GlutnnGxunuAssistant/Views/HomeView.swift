@@ -315,7 +315,7 @@ struct HomeView: View {
         defer { isRefreshing = false }
         appState.showToast(.loading, "准备更新...", duration: 10)
         try? await Task.sleep(for: .seconds(1)) 
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled else { appState.toast = nil; return }
    
         appState.showToast(.loading, "获取课表...", duration: 10)
         let wasLoggedIn = appState.isLoggedIn
@@ -612,7 +612,7 @@ struct HomeView: View {
             .refreshable {
                 await refreshWithFeedback()
             }
-            .task {
+            .task(id: appState.isLoggedIn) {
                 // 近期考试条要数据：登录后、还没拉过考试时静默拉一次。
                 // 失败也不弹提示，条子不出现就是了。
                     if appState.isLoggedIn, !hasAttemptedExamsLoad, appState.exams.isEmpty, appState.examsError == nil {

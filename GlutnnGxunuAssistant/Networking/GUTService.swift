@@ -61,7 +61,7 @@ enum GUTService {
        let trimmedCaptcha = captcha.trimmingCharacters(in: .whitespacesAndNewlines)
        guard !trimmedCaptcha.isEmpty else { return .failure("请输入验证码") }
         if !captcha.isEmpty {
-            let captchaOK = await checkCaptcha(captcha)
+            let captchaOK = await checkCaptcha(trimmedCaptcha)
             if !captchaOK {
                 AppLogger.shared.log("GUT login failure: captcha invalid")
                 return .failure("验证码错误，请重新输入")
@@ -71,7 +71,7 @@ enum GUTService {
             let form = [
                 "j_username": studentId,
                 "j_password": gutPasswordHash(password),
-                "j_captcha": captcha,
+                "j_captcha": trimmedCaptcha,
             ]
             let (data, response) = try await client.postForm(url, form: form)
             // 成功：302 跳到教务内页（Location 头）。
@@ -372,7 +372,7 @@ enum GUTService {
         let newPeriod = parsePeriods(newPeriods)
         let oldWd = oldW == nil ? nil : weekdayNumber(from: oldWeekday)
         let newWd = newW == nil ? nil : weekdayNumber(from: newWeekday)
-        let location = newLocation.contains("nbsp") ? "未知" : newLocation
+        let location = (newLocation.isEmpty || newLocation.contains("nbsp")) ? "未知" : newLocation
         let remarkWeek = newW.map { "第\($0)周" } ?? (oldW.map { "第\($0)周" } ?? "")
         let remark = "\(remarkWeek);\(newWeekday);\(newPeriods) - 调课/补课;\(location)"
         return ScheduleChange(
@@ -498,7 +498,7 @@ enum GUTService {
                 let weekText = cells[1]
                 let lessonInterval = cells[2]
                 var location = cells[3]
-                if location.contains("nbsp") { location = "未知" }
+                if location.isEmpty || location.contains("nbsp") { location = "未知" }
                 guard let weekday = weekdayNumber(from: weekText) else { continue }
                 let lessons = lessonInterval.split(separator: "-").compactMap { Int($0) }
                 guard !lessons.isEmpty else { continue }
@@ -719,6 +719,7 @@ enum GUTService {
         guard times.count >= 2 else { return false }
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
         formatter.locale = Locale(identifier: "en_US_POSIX")
         guard let endTime = formatter.date(from: "\(datePart) \(times[1])") else { return false }
         return Date() > endTime
@@ -794,7 +795,7 @@ enum GUTService {
         let query = String(href[href.index(after: queryStart)...])
         var studentId: String?
         var classId: String?
-        for pair in query.split(separator: "&") {
+        for pair in query.replacingOccurrences(of: "&amp;", with: "&").split(separator: "&") {
             let kv = pair.split(separator: "=", maxSplits: 1)
             guard kv.count == 2 else { continue }
             if kv[0] == "studentId" { studentId = String(kv[1]) }
@@ -855,7 +856,7 @@ enum GUTService {
                 if semesters.isEmpty { semesters.append([]) }
                 semesters[semesters.count - 1].append(GUTPlanCourse(
                     code: cells[0], name: cells[1], assessmentType: cells[2],
-                    credit: cells[3], hours: cells[4].replacingOccurrences(of: ".0", with: ""),
+                    credit: cells[3], hours: cells[4].hasSuffix(".0") ? String(cells[4].dropLast(2)) : cells[4],
                     category: cells[5]
                 ))
             }

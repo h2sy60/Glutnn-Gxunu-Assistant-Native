@@ -290,7 +290,9 @@ struct Course: Identifiable, Equatable, Codable {
 let weekdayNames = ["", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
 
 func weekdayNumber(from text: String) -> Int? {
-    weekdayNames.firstIndex(of: text)
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    return weekdayNames.firstIndex(of: trimmed)
 }
 
 // MARK: - 周次区间解析（从 Flutter 版 parseWeekList 原样移植）
@@ -305,6 +307,7 @@ func parseWeekList(_ weekInterval: String) -> (weeks: [Int], special: Bool) {
     func step3BySection(_ section: String) {
         let range = section.split(separator: "-")
         if range.count == 2, let a = Int(range[0]), let b = Int(range[1]) {
+                guard a <= b else { return }
             for i in a...b { weekList.append(i) }
         } else if range.count == 1, let a = Int(range[0]) {
             weekList.append(a)
@@ -322,6 +325,7 @@ func parseWeekList(_ weekInterval: String) -> (weeks: [Int], special: Bool) {
         let cleaned = section.replacingOccurrences(of: key, with: "")
         let range = cleaned.split(separator: "-")
         if range.count == 2, let a = Int(range[0]), let b = Int(range[1]) {
+                guard a <= b else { return }
             for i in a...b where (isEven ? i.isMultiple(of: 2) : !i.isMultiple(of: 2)) {
                 weekList.append(i)
             }
@@ -350,7 +354,7 @@ func parseWeekList(_ weekInterval: String) -> (weeks: [Int], special: Bool) {
         step3()
     } else {
         specialWeek = false
-        weekList = weekInterval.split(separator: "-").map { Int($0) ?? 0 }
+        weekList = weekInterval.split(separator: "-").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
     }
     return (weekList, specialWeek)
 }

@@ -644,7 +644,7 @@ struct ScheduleGrid: View {
             }
             // 课程块（按天分组，已合并连续节次；用开始节次做 id，同一门课分两段上时 id 不会撞）
             ForEach(visibleWeekdays, id: \.self) { weekday in
-                ForEach(blocks(for: weekday).map { (block: $0, uniqueKey: "\($0.start)-\($0.end)-\($0.course.name)-\($0.isCurrentWeek)") }, id: \.uniqueKey) { item in
+                ForEach(blocks(for: weekday).filter { $0.end >= $0.start }.map { (block: $0, uniqueKey: "\($0.start)-\($0.end)-\($0.course.name)-\($0.isCurrentWeek)") }, id: \.uniqueKey) { item in
                     let block = item.block
                     let x = gutter + CGFloat(columnIndex(for: weekday)) * columnWidth + 2
                     let y = CGFloat(block.start - 1) * rowHeight + 2
@@ -696,7 +696,7 @@ struct ScheduleGrid: View {
                         if appearance.textVerticalCenter { Spacer() }
                     }
                     .padding(.horizontal, appearance.textHorizontalCenter ? 0 : 4)
-                    .frame(width: w, height: h)
+                    .frame(width: w, height: h, alignment: appearance.textVerticalCenter ? .center : .top)
                     .background(blockColor.opacity(bgOpacity), in: RoundedRectangle(cornerRadius: appearance.cornerRadius))
                     .overlay(
                         RoundedRectangle(cornerRadius: appearance.cornerRadius)
