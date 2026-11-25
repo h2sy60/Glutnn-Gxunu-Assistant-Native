@@ -2357,12 +2357,7 @@ struct GXVNUProfileView: View {
         isLoading = true
         defer { isLoading = false }
         do {
-            profile = try await GXVNUService.fetchProfile()
-            errorMessage = nil
-            // 照片单独拉，失败不影响信息展示。
-            if let data = try? await GXVNUService.fetchProfilePhoto() {
-                photoData = data
-            }
+           let (fetchedProfile, fetchedPhoto) = try await appState.performWithAutoRelogin { let p = try await GXVNUService.fetchProfile(); let photo = try? await GXVNUService.fetchProfilePhoto(); return (p, photo) }; profile = fetchedProfile; errorMessage = nil; if let data = fetchedPhoto { photoData = data }
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? "拉取失败，请稍后重试"
         }
@@ -2374,7 +2369,7 @@ struct GXVNUProfileView: View {
 // 空列表 = 没有预警（好事），显示绿色对勾而不是“暂无数据”。
 
 struct GXVNUWarningView: View {
-    @State private var warnings: [GXVNUWarning] = []
+    @State private var warnings: [GXVNUWarning] = []; @Environment(AppState.self) private var appState
     @State private var isLoading = false
     @State private var errorMessage: String? = nil
 
@@ -2450,8 +2445,7 @@ struct GXVNUWarningView: View {
         isLoading = true
         defer { isLoading = false }
         do {
-            let ids = try await GXVNUService.resolveAcademicIDs()
-            warnings = try await GXVNUService.fetchAcademicWarning(ids: ids)
+           warnings = try await appState.performWithAutoRelogin { let ids = try await GXVNUService.resolveAcademicIDs(); return try await GXVNUService.fetchAcademicWarning(ids: ids) }
             errorMessage = nil
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? "拉取失败，请稍后重试"
@@ -2466,6 +2460,7 @@ struct GXVNUWarningView: View {
 // 大一新生：已修得 0、在修 25.2、总要求 75。
 
 struct GXVNUGraduationView: View {
+    @Environment(AppState.self) private var appState
     @State private var totalCredits: Double = 0
     @State private var earnedCredits: Double = 0
     @State private var inProgressCredits: Double = 0
@@ -2604,8 +2599,11 @@ struct GXVNUGraduationView: View {
         isLoading = true
         defer { isLoading = false }
         do {
-            let ids = try await GXVNUService.resolveAcademicIDs()
-            let plans = try await GXVNUService.fetchTeachingPlan(ids: ids)
+            let (ids, plans) = try await appState.performWithAutoRelogin {
+                let ids = try await GXVNUService.resolveAcademicIDs()
+                let plans = try await GXVNUService.fetchTeachingPlan(ids: ids)
+                return (ids, plans)
+            }
             // 本专业计划：专业名与个人信息里的专业一致（与教学计划页同款匹配）。
             let myPlan = plans.first { $0.majorName == ids.major }
                 ?? plans.first { !$0.majorName.isEmpty && ids.major.contains($0.majorName) }
@@ -2620,20 +2618,20 @@ struct GXVNUGraduationView: View {
             // 计划课程明细（按性质汇总要求学分）。
             var requiredByCategory: [String: Double] = [:]
             if !plan.planId.isEmpty {
-                let planCourses = try await GXVNUService.fetchPlanCourses(planId: plan.planId)
+                let planId = plan.planId; let planCourses = try await appState.performWithAutoRelogin { try await GXVNUService.fetchPlanCourses(planId: planId) }
                 for c in planCourses {
                     requiredByCategory[c.category, default: 0] += c.credit
                 }
             }
             // 在修（已选课程）。
-            let selected = try await GXVNUService.fetchSelectedCourses()
+            let selected = try await appState.performWithAutoRelogin { try await GXVNUService.fetchSelectedCourses() }
             inProgressCredits = selected.reduce(0) { $0 + $1.credit }
             var inProgressByCategory: [String: Double] = [:]
             for c in selected {
                 inProgressByCategory[c.category, default: 0] += c.credit
             }
             // 已修得（成绩，score >= 60 计为通过）。
-            let scores = try await GXVNUService.fetchScores(year: nil, term: nil)
+            let scores = try await appState.performWithAutoRelogin { try await GXVNUService.fetchScores(year: nil, term: nil) }
             var earnedByCategory: [String: Double] = [:]
             var earned: Double = 0
             for s in scores where s.score >= 60 {
@@ -2663,6 +2661,7 @@ struct GXVNUGraduationView: View {
 // MARK: - 通知公告（build 53）：index_cxNews HTML 解析，只读列表 + 详情
 
 struct GXVNUNotificationsView: View {
+    @Environment(AppState.self) private var appState
     @State private var items: [GXVNUNotification] = []
     @State private var isLoading = false
     @State private var errorMessage: String? = nil
@@ -2721,7 +2720,7 @@ struct GXVNUNotificationsView: View {
         isLoading = true
         defer { isLoading = false }
         do {
-            items = try await GXVNUService.fetchNotifications()
+            items = try await appState.performWithAutoRelogin { try await GXVNUService.fetchNotifications() }
             errorMessage = nil
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? "拉取失败，请稍后重试"
@@ -2731,6 +2730,7 @@ struct GXVNUNotificationsView: View {
 
 /// 通知详情：拉 xwck_ckXw.html，去标签后显示纯文本。
 struct GXVNUNotificationDetailView: View {
+    @Environment(AppState.self) private var appState
     var xwbh: String
     var title: String
     @State private var content: String = ""
@@ -2772,7 +2772,8 @@ struct GXVNUNotificationDetailView: View {
         isLoading = true
         defer { isLoading = false }
         do {
-            content = try await GXVNUService.fetchNotificationDetail(xwbh: xwbh)
+            let id = xwbh
+            content = try await appState.performWithAutoRelogin { try await GXVNUService.fetchNotificationDetail(xwbh: id) }
             errorMessage = nil
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? "拉取失败，请稍后重试"
@@ -2783,6 +2784,7 @@ struct GXVNUNotificationDetailView: View {
 // MARK: - 培养方案 PDF（build 53）：pyfaxxck_dyPyfaxx.html，PDFKit 展示
 
 struct GXVNUTrainingPlanView: View {
+    @Environment(AppState.self) private var appState
     @State private var pdfData: Data? = nil
     @State private var isLoading = false
     @State private var errorMessage: String? = nil
@@ -2827,7 +2829,7 @@ struct GXVNUTrainingPlanView: View {
         isLoading = true
         defer { isLoading = false }
         do {
-            pdfData = try await GXVNUService.fetchTrainingPlanPDF()
+            pdfData = try await appState.performWithAutoRelogin { try await GXVNUService.fetchTrainingPlanPDF() }
             errorMessage = nil
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? "下载失败，请稍后重试"
@@ -2858,6 +2860,7 @@ struct PDFKitView: UIViewRepresentable {
 // MARK: - 毕设（build 53）：已选题数 + 选题列表（大一为空，大四才有数据）
 
 struct GXVNUThesisView: View {
+    @Environment(AppState.self) private var appState
     @State private var selectedCount: Int = 0
     @State private var topics: [GXVNUThesisTopic] = []
     @State private var isLoading = false
@@ -2938,8 +2941,8 @@ struct GXVNUThesisView: View {
         isLoading = true
         defer { isLoading = false }
         do {
-            selectedCount = try await GXVNUService.fetchThesisCount()
-            topics = try await GXVNUService.fetchThesisTopics()
+            selectedCount = try await appState.performWithAutoRelogin { try await GXVNUService.fetchThesisCount() }
+            topics = try await appState.performWithAutoRelogin { try await GXVNUService.fetchThesisTopics() }
             errorMessage = nil
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? "拉取失败，请稍后重试"
