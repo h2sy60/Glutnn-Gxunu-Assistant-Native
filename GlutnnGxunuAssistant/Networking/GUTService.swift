@@ -58,6 +58,8 @@ enum GUTService {
         // build 67：先预检验证码（旧项目流程）。验证码不对直接失败，不发登录
         // 请求；旧项目 login.dart checking() / dialog.dart check() 都是
         // 先 checkCaptcha、通过了才调 login()。
+       let trimmedCaptcha = captcha.trimmingCharacters(in: .whitespacesAndNewlines)
+       guard !trimmedCaptcha.isEmpty else { return .failure("请输入验证码") }
         if !captcha.isEmpty {
             let captchaOK = await checkCaptcha(captcha)
             if !captchaOK {
@@ -104,7 +106,7 @@ enum GUTService {
                 }
             }
             AppLogger.shared.log("GUT login failure, location=\(location)")
-            if errorHtml.contains("验证码") {
+            if errorHtml.contains("验证码错误") || errorHtml.contains("验证码不正确") {
                 return .failure("验证码错误，请重新输入")
             } else if errorHtml.contains("密码") || errorHtml.contains("用户") || location.contains("login_error") {
                 return .failure("学号或密码错误")
@@ -400,8 +402,8 @@ enum GUTService {
     private static func parsePeriods(_ text: String) -> (Int, Int) {
         let cleaned = text.replacingOccurrences(of: "[第节周单双]", with: "", options: .regularExpression)
         let parts = cleaned.split(separator: "-").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
-        guard parts.count >= 2 else { return (0, 0) }
-        return (parts[0], parts[1])
+        guard let first = parts.first, let last = parts.last else { return (0, 0) }
+        return (first, last)
     }
 
     /// 把调课变更应用到课表上（旧项目 getScheduleChanges 同款语义）：
@@ -464,7 +466,7 @@ enum GUTService {
         var courses: [Course] = []
         // 外层行：从 <tr ... infolist_common ...> 到内嵌 </table> 后的 </tr>。
         // 分组 1=内嵌表之前的 td，2=内嵌表体，3=内嵌表之后的 td。
-        let rowPattern = #"<tr[^>]*infolist_common[^>]*>([\s\S]*?)<table[^>]*class="[^"]*none[^"]*"[^>]*>([\s\S]*?)</table>([\s\S]*?)</tr>"#
+        let rowPattern = #"<tr[^>]*infolist_common[^>]*>([\s\S]*?)</tr>"#
         guard let rowRegex = try? NSRegularExpression(pattern: rowPattern, options: [.caseInsensitive, .dotMatchesLineSeparators]) else {
             return []
         }
@@ -473,11 +475,11 @@ enum GUTService {
         AppLogger.shared.log("GUT parse: infolist rows matched=\(matches.count)")
 
         for match in matches {
-            guard match.numberOfRanges == 4,
-                  let outerRange = Range(match.range(at: 1), in: html),
-                  let innerRange = Range(match.range(at: 2), in: html) else { continue }
-            let outerHTML = String(html[outerRange])
-            let innerHTML = String(html[innerRange])
+            guard match.numberOfRanges >= 2,
+                  let rowRange = Range(match.range(at: 1), in: html) else { continue }
+                  let rowContent = String(html[rowRange])
+            guard let innerRegex = try? NSRegularExpression(pattern: #"<table[^>]*class="[^"]*none[^"]*"[^>]*>([\s\S]*?)</table>"#, options: [.caseInsensitive, .dotMatchesLineSeparators]), let innerMatch = innerRegex.firstMatch(in: rowContent, options: [], range: NSRange(rowContent.startIndex..., in: rowContent)), let tableFullRange = Range(innerMatch.range(at: 0), in: rowContent), let innerRange = Range(innerMatch.range(at: 1), in: rowContent) else { continue }
+            let outerHTML = String(rowContent[..<tableFullRange.lowerBound]); let innerHTML = String(rowContent[innerRange])
 
             // 外层 td 文本（去标签、去空白）。td[2]=课程名，td[3]=老师。
             let outerCells = tdTexts(outerHTML)
@@ -492,7 +494,7 @@ enum GUTService {
                 var cells = tdTexts(rowHTML)
                 guard cells.count >= 4 else { continue }
                 // Flutter 版：去掉 第/节/周 字符。
-                cells = cells.map { $0.replacingOccurrences(of: "[第节周]", with: "", options: .regularExpression) }
+                for i in 0..<3 { cells[i] = cells[i].replacingOccurrences(of: "[第节周]", with: "", options: .regularExpression) }
                 // 含 nbsp 的空行跳过。
                 if (cells[1] + cells[2]).contains("nbsp") { continue }
                 let weekInterval = cells[0]
@@ -502,9 +504,9 @@ enum GUTService {
                 if location.contains("nbsp") { location = "未知" }
                 guard let weekday = weekdayNumber(from: weekText) else { continue }
                 let lessons = lessonInterval.split(separator: "-").compactMap { Int($0) }
-                guard lessons.count >= 2 else { continue }
+                guard !lessons.isEmpty else { continue }
                 let startSection = lessons[0]
-                let endSection = lessons[1]
+                let endSection = lessons.last ?? startSection
                 guard startSection >= 1, endSection >= startSection else { continue }
 
                 let parsed = parseWeekList(weekInterval)
@@ -662,7 +664,7 @@ enum GUTService {
         // build 67：先按状态码判会话过期（302 空正文），再解码。
         try throwIfSessionExpired(response: response)
         guard let html = decodeGUTHTML(data, response: response), !html.isEmpty else {
-            throw ScheduleError.parseError
+            throw ScheduleError.customParseError("考试数据解析失败")
         }
         if isGUTSessionExpired(response: response, html: html) {
             throw ScheduleError.sessionExpired
@@ -675,6 +677,7 @@ enum GUTService {
     /// 解析桂工考试页（旧项目 getExams）：datalist 表，跳过表头，固定列号：
     /// [1]=课程名、[2]=考试时间、[3]=考场（取最后一段，如 "雁山 5-101" → "5-101"）。
     static func parseExamsHTML(_ html: String) throws -> [ExamItem] {
+        if html.contains("请重新登录") || html.contains("您尚未登录") || html.contains("j_acegi_security_check") || html.contains("affairLogin.jsp") || html.contains("top.location.href") { throw ScheduleError.sessionExpired }
         guard let tableRegex = try? NSRegularExpression(
             pattern: #"<table[^>]*datalist[^>]*>([\s\S]*?)</table>"#,
             options: [.caseInsensitive, .dotMatchesLineSeparators]),
@@ -684,7 +687,7 @@ enum GUTService {
             if html.contains("没有考试") || html.contains("暂无考试") {
                 return []
             }
-            throw ScheduleError.parseError
+            throw ScheduleError.customParseError("考试数据解析失败")
         }
         let tableHTML = String(html[tableRange])
         let rows = trRows(tableHTML)
@@ -974,7 +977,7 @@ enum GUTService {
     /// 嵌套表第二行 11 格，含 &nbsp; 即该节空闲。
     static func parseFreeClassroomsHTML(_ html: String) throws -> [GUTClassroom] {
         guard let rowRegex = try? NSRegularExpression(
-            pattern: #"<tr[^>]*infolist_common[^>]*>([\s\S]*?</table>[\s\S]*?)</tr>"#,
+            pattern: #"<tr[^>]*infolist_common[^>]*>([\s\S]*?)</tr>"#,
             options: [.caseInsensitive, .dotMatchesLineSeparators]) else { return [] }
         let range = NSRange(html.startIndex..., in: html)
         var rooms: [GUTClassroom] = []
