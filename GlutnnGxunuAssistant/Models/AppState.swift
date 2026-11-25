@@ -1617,7 +1617,7 @@ extension AppState {
                     courses: restoredCourses, school: currentSchool, leadMinutes: leadMinutes)
             }
         } else {
-            ReminderManager.cancelClassReminders()
+            Task { await ReminderManager.cancelClassReminders() }
         }
         if AppSettings.examReminderEnabled {
             let currentExams = exams
@@ -1626,7 +1626,7 @@ extension AppState {
                 await ReminderManager.rescheduleExamReminders(exams: currentExams, leadDays: leadDays)
             }
         } else {
-            ReminderManager.cancelExamReminders()
+            Task { await ReminderManager.cancelExamReminders() }
         }
         AppLogger.shared.log("backup imported")
         return true
