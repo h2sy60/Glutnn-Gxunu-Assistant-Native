@@ -393,8 +393,8 @@ func currentWeek(for school: SchoolConfig, on date: Date = Date()) -> Int {
 // MARK: - 成绩模型（两校共用）
 
 /// 一门课的成绩。
-struct CourseScore: Identifiable {
-    let id = UUID()
+struct CourseScore: Identifiable, Codable {
+    var id = UUID()
     let courseCode: String
     let courseName: String
     let teacher: String
@@ -408,7 +408,7 @@ struct CourseScore: Identifiable {
 }
 
 /// 一场考试（两校共用）。
-struct ExamItem: Identifiable {
+struct ExamItem: Identifiable, Codable {
     var id: String { "\(courseName)-\(time)-\(location)" }
     let courseName: String
     let time: String
