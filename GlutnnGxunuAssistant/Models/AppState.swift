@@ -644,7 +644,14 @@ final class AppState {
     /// 验证码弹窗（原版 dialog.dart showCaptchaDialog 同款）：
     /// 会话过期点“需要验证”时弹，不占整页；登录页那个整页表单只在
     /// 首次登录 / 切换账号时用。弹窗自己的输入框与校验中状态。
-    var showCaptchaDialog = false
+    var showCaptchaDialog = false {
+        didSet {
+            if !showCaptchaDialog {
+                resolveReloginWaiters(false)
+            }
+        }
+    }
+    private var reloginContinuations: [CheckedContinuation<Bool, Never>] = []
     var captchaDialogText = ""
     var captchaChecking = false
 
@@ -902,16 +909,20 @@ final class AppState {
         case .success:
             AppLogger.shared.log("reverify \(school.id) success")
             isLoggedIn = true
+            let hadWaiters = !reloginContinuations.isEmpty
+            resolveReloginWaiters(true)
             showCaptchaDialog = false
             captchaDialogText = ""
             captchaText = ""
             showCaptcha = false
+            if !hadWaiters {
             await refreshSchedule()
             if scheduleError == nil {
                 showToast(.success, "数据已更新!", duration: 1)
             } else {
                 showToast(.error, scheduleError ?? "拉取失败", duration: 4)
             }
+            } 
         case .failure(let message):
             AppLogger.shared.log("reverify \(school.id) failure: \(message)")
             if message.contains("验证码") {
@@ -1250,47 +1261,27 @@ final class AppState {
         }
 
         do {
-            let list: [CourseScore]
-            if school.id == .gut {
-                list = try await GUTService.fetchScores(year: filterYear, term: filterTerm)
+        let currentSchoolId = school.id
+        let list: [CourseScore] = try await performWithAutoRelogin {
+            if currentSchoolId == .gut {
+                return try await GUTService.fetchScores(year: filterYear, term: filterTerm)
             } else {
-                list = try await GXVNUService.fetchScores(year: filterYear, term: filterTerm)
+                return try await GXVNUService.fetchScores(year: filterYear, term: filterTerm)
             }
-            scores = list
-            ModuleDiskCache.save(scores, schoolId: school.id, account: studentId, key: "scores")
-            AppLogger.shared.log("scores \(school.id) ok, \(list.count) items")
-            if list.isEmpty { scoresError = "暂无成绩" }
-        } catch let error as ScheduleError {
-            if case .sessionExpired = error {
-                AppLogger.shared.log("scores \(school.id) session expired, relogin once")
-                // 桂工重登要验证码，不在这里重登，等“需要验证”走验证码弹窗；
-                // 职师院静默重登一次。会话过期不置 isLoggedIn=false（同 refreshSchedule）。
-                if school.id == .gut {
-                    scoresError = "登录已过期，请重新登录"
-                } else {
-                    // 职师院重登（reloginGXVNU：同 refreshSchedule）。
-                    let reloginOutcome = await reloginGXVNU()
-                    if reloginOutcome == .success {
-                        do {
-                            let list = try await GXVNUService.fetchScores(year: filterYear, term: filterTerm)
-                            scores = list
-                        ModuleDiskCache.save(scores, schoolId: school.id, account: studentId, key: "scores")
-                            if list.isEmpty { scoresError = "暂无成绩" }
-                        } catch {
-                            scoresError = (error as? LocalizedError)?.errorDescription ?? "拉取成绩失败"
-                        }
-                    } else if reloginOutcome == .captchaRequired {
-                        // 验证码弹窗已弹出，不再挂“需要验证”。
-                        scoresError = nil
-                    } else {
-                        scoresError = "登录已过期，请重新登录"
-                    }
-                }
-            } else {
-                scoresError = error.errorDescription
-            }
-        } catch {
-            scoresError = (error as? LocalizedError)?.errorDescription ?? "拉取成绩失败"
+        }
+        scores = list
+        ModuleDiskCache.save(scores, schoolId: school.id, account: studentId, key: "scores")
+        AppLogger.shared.log("scores \(school.id) ok, \(list.count) items")
+        if list.isEmpty { scoresError = "暂无成绩" }
+    } catch let error as ScheduleError {
+        if case .sessionExpired = error {
+            AppLogger.shared.log("scores \(school.id) session expired")
+            scoresError = "登录已过期，请重新登录"
+        } else {
+            scoresError = error.errorDescription
+        }
+    } catch {
+        scoresError = (error as? LocalizedError)?.errorDescription ?? "拉取成绩失败"
         }
     }
 
@@ -1304,12 +1295,16 @@ final class AppState {
         defer { examsLoading = false }
 
         do {
-            let list: [ExamItem]
-            if school.id == .gut {
-                list = try await GUTService.fetchExams()
+            let currentSchoolId = school.id
+        let currentYear = year
+        let currentSemester = semester
+        let list: [ExamItem] = try await performWithAutoRelogin {
+            if currentSchoolId == .gut {
+                return try await GUTService.fetchExams()
             } else {
-                list = try await GXVNUService.fetchExams(year: year, semester: semester)
+                return try await GXVNUService.fetchExams(year: currentYear, semester: currentSemester)
             }
+        }
             exams = list
             ModuleDiskCache.save(exams, schoolId: school.id, account: studentId, key: "exams")
             AppLogger.shared.log("exams \(school.id) ok, \(list.count) items")
@@ -1324,26 +1319,8 @@ final class AppState {
             }
         } catch let error as ScheduleError {
             if case .sessionExpired = error {
-                AppLogger.shared.log("exams \(school.id) session expired, relogin once")
-                if school.id == .gut {
-                    examsError = "登录已过期，请重新登录"
-                } else {
-                    let reloginOutcome = await reloginGXVNU()
-                    if reloginOutcome == .success {
-                        do {
-                            let list = try await GXVNUService.fetchExams(year: year, semester: semester)
-                            exams = list
-                        ModuleDiskCache.save(exams, schoolId: school.id, account: studentId, key: "exams")
-                            if list.isEmpty { examsError = "暂无考试安排" }
-                        } catch {
-                            examsError = (error as? LocalizedError)?.errorDescription ?? "拉取考试失败"
-                        }
-                    } else if reloginOutcome == .captchaRequired {
-                        examsError = nil
-                    } else {
-                        examsError = "登录已过期，请重新登录"
-                    }
-                }
+                AppLogger.shared.log("exams \(school.id) session expired")
+            examsError = "登录已过期，请重新登录" 
             } else {
                 examsError = error.errorDescription
             }
@@ -1351,7 +1328,18 @@ final class AppState {
             examsError = (error as? LocalizedError)?.errorDescription ?? "拉取考试失败"
         }
     }
-
+    private func resolveReloginWaiters(_ success: Bool) {
+        let waiters = reloginContinuations
+        reloginContinuations.removeAll()
+        for continuation in waiters {
+            continuation.resume(returning: success)
+        }
+    }
+    private func waitForCaptchaRelogin() async -> Bool {
+        await withCheckedContinuation { continuation in
+              reloginContinuations.append(continuation)
+                                      }
+    }
     func performWithAutoRelogin<T>(_ operation: @escaping () async throws -> T) async throws -> T {
         do {
             return try await operation()
@@ -1365,6 +1353,10 @@ final class AppState {
                     captchaChecking = false
                     showCaptchaDialog = true
                     Task { await fetchCaptcha() }
+                let ok = await waitForCaptchaRelogin()
+                if ok {
+                    return try await operation()
+                }
                 }
             } else if school.id == .gut {
                 if !studentId.isEmpty && !password.isEmpty {
@@ -1372,6 +1364,10 @@ final class AppState {
                     captchaChecking = false
                     showCaptchaDialog = true
                     Task { await fetchCaptcha() }
+                let ok = await waitForCaptchaRelogin()
+                if ok {
+                    return try await operation()
+                }
                 }
             }
             throw ScheduleError.sessionExpired
