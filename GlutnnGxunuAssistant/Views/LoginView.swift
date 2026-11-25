@@ -158,7 +158,7 @@ struct LoginView: View {
 
                     // 登录按钮（全宽 52 高玻璃胶囊，“即刻登录”）
                     Button {
-                        focusedField = nil
+                        guard !appState.loginLoading else { return }; focusedField = nil
                         Task { await appState.login() }
                     } label: {
                         if appState.loginLoading {
@@ -188,7 +188,7 @@ struct LoginView: View {
                 // 高度定死为 geo.size.height：键盘弹起时 geo.size 不变，
                 // 内容钉在顶部，键盘只从底部盖上来。
                 .frame(width: geo.size.width, alignment: .top)
-            }
+            }.scrollDismissesKeyboard(.interactively)
             }
         }
         .task {
