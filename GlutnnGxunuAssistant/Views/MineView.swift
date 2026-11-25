@@ -1327,6 +1327,7 @@ struct GUTMoreView: View {
 // MARK: - 桂工教学计划（build 58，按旧项目 teachingPlanPage）
 
 struct GUTTeachingPlanView: View {
+    @Environment(AppState.self) private var appState
     @State private var plan: GUTTeachingPlan?
     @State private var isLoading = false
     @State private var errorMessage: String? = nil
@@ -1405,7 +1406,7 @@ struct GUTTeachingPlanView: View {
         isLoading = true
         defer { isLoading = false }
         do {
-            plan = try await GUTService.fetchTeachingPlan()
+            plan = try await appState.performWithAutoRelogin { try await GUTService.fetchTeachingPlan() }
             errorMessage = nil
         } catch let error as ScheduleError {
             errorMessage = error == .sessionExpired ? "登录已过期，请重新登录" : error.errorDescription
@@ -1464,7 +1465,7 @@ struct GUTClassroomQueryView: View {
                     Section {
                         HStack { Spacer(); ProgressView("查询中…"); Spacer() }
                     }
-                } else if let errorMessage, rooms.isEmpty, hasQueried {
+                } else if let errorMessage, rooms.isEmpty {
                     Section {
                         Text(errorMessage)
                             .font(.callout)
@@ -1513,7 +1514,7 @@ struct GUTClassroomQueryView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task {
             // 默认本周、本星期（旧项目：周次取当前周，星期取今天）。
-            selectedWeek = appState.currentWeek
+            selectedWeek = min(max(appState.currentWeek, 1), 20)
             let swiftWeekday = Calendar.current.component(.weekday, from: Date())
             selectedDay = swiftWeekday == 1 ? 7 : swiftWeekday - 1
             await loadBuildings()
@@ -1701,7 +1702,18 @@ struct GUTCareerView: View {
 /// 职师院生涯预估：大学进程 + 全部/专业课程 + 成绩合格/重修补考/在修。
 /// 数据复用毕业进度那套（教学计划 + 计划课程 + 已选课程 + 成绩 + 个人信息里的学制）。
 /// 职师院没有教学计划里的通过/未通过计数，所以底下一行用成绩与在修数据。
+private struct GXVNUCareerCache: Codable {
+    let totalCourseCount: Int
+    let majorCourseCount: Int
+    let passCount: Int
+    let failCount: Int
+    let inProgressCount: Int
+    let grade: Int
+    let schoolingLength: Int
+}
+
 struct GXVNUCareerView: View {
+    @Environment(AppState.self) private var appState
     @State private var totalCourseCount = 0
     @State private var majorCourseCount = 0
     @State private var passCount = 0
@@ -1773,41 +1785,71 @@ struct GXVNUCareerView: View {
 
     private func load() async {
         guard !isLoading else { return }
+        if !hasLoaded, let cached = ModuleDiskCache.load(GXVNUCareerCache.self, schoolId: appState.school.id, account: appState.studentId, key: "gxvnu_career") {
+            totalCourseCount = cached.totalCourseCount
+            majorCourseCount = cached.majorCourseCount
+            passCount = cached.passCount
+            failCount = cached.failCount
+            inProgressCount = cached.inProgressCount
+            grade = cached.grade
+            schoolingLength = cached.schoolingLength
+            hasLoaded = true
+        }
         isLoading = true
         defer { isLoading = false }
         do {
-            let ids = try await GXVNUService.resolveAcademicIDs()
+            let fetched: GXVNUCareerCache? = try await appState.performWithAutoRelogin {
+                let ids = try await GXVNUService.resolveAcademicIDs()
             let plans = try await GXVNUService.fetchTeachingPlan(ids: ids)
             let myPlan = plans.first { $0.majorName == ids.major }
                 ?? plans.first { !$0.majorName.isEmpty && ids.major.contains($0.majorName) }
                 ?? plans.first { !$0.majorName.isEmpty && $0.majorName.contains(ids.major) }
                 ?? plans.first
-            guard let plan = myPlan else {
+            guard let plan = myPlan else { return nil }
+                var totalCount = plan.courseCount
+                let parsedGrade = Int(ids.grade) ?? 0
+                var length = 4
+                // 学制：个人信息里的 duration（如 "4"），取第一个数字，默认 4 年。
+                if let profile = try? await GXVNUService.fetchProfile() {
+                    if let years = profile.duration.range(of: #"\d+"#, options: .regularExpression).flatMap({ Int(profile.duration[$0]) }), years > 0 {
+                        length = years
+                    }
+                }
+            // 专业课程：计划课程里类别含“专业”的。
+            var majorCount = 0
+                if !plan.planId.isEmpty {
+                    let planCourses = try await GXVNUService.fetchPlanCourses(planId: plan.planId)
+                    majorCount = planCourses.filter { $0.category.contains("专业") }.count
+                    if totalCount == 0 { totalCount = planCourses.count }
+                }
+                // 在修（已选课程）。
+                let selected = try await GXVNUService.fetchSelectedCourses()
+                // 通过情况（成绩 >= 60 合格）。
+                let scores = try await GXVNUService.fetchScores(year: nil, term: nil)
+                return GXVNUCareerCache(
+                    totalCourseCount: totalCount,
+                    majorCourseCount: majorCount,
+                    passCount: scores.filter { $0.score >= 60 }.count,
+                    failCount: scores.filter { $0.score < 60 }.count,
+                    inProgressCount: selected.count,
+                    grade: parsedGrade,
+                    schoolingLength: length
+                )
+            }
+            guard let cache = fetched else {
                 errorMessage = "未找到本专业教学计划"
                 return
             }
-            totalCourseCount = plan.courseCount
-            grade = Int(ids.grade) ?? 0
-            // 学制：个人信息里的 duration（如 "4"），取第一个数字，默认 4 年。
-            if let profile = try? await GXVNUService.fetchProfile() {
-                let digits = profile.duration.filter { $0.isNumber }
-                if let years = Int(digits), years > 0 { schoolingLength = years }
-            }
-            // 专业课程：计划课程里类别含“专业”的。
-            if !plan.planId.isEmpty {
-                let planCourses = try await GXVNUService.fetchPlanCourses(planId: plan.planId)
-                majorCourseCount = planCourses.filter { $0.category.contains("专业") }.count
-                if totalCourseCount == 0 { totalCourseCount = planCourses.count }
-            }
-            // 在修（已选课程）。
-            let selected = try await GXVNUService.fetchSelectedCourses()
-            inProgressCount = selected.count
-            // 通过情况（成绩 >= 60 合格）。
-            let scores = try await GXVNUService.fetchScores(year: nil, term: nil)
-            passCount = scores.filter { $0.score >= 60 }.count
-            failCount = scores.filter { $0.score < 60 }.count
+            totalCourseCount = cache.totalCourseCount
+            majorCourseCount = cache.majorCourseCount
+            passCount = cache.passCount
+            failCount = cache.failCount
+            inProgressCount = cache.inProgressCount
+            grade = cache.grade
+            schoolingLength = cache.schoolingLength
             hasLoaded = true
             errorMessage = nil
+            ModuleDiskCache.save(cache, schoolId: appState.school.id, account: appState.studentId, key: "gxvnu_career")
         } catch let error as ScheduleError {
             errorMessage = error == .sessionExpired ? "登录已过期，请重新登录" : error.errorDescription
         } catch {
