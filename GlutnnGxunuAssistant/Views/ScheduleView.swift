@@ -101,6 +101,7 @@ import EventKit // 导出到日历（EventKit）：建日历、写课程事件�
 struct ScheduleView: View {
     @Environment(AppState.self) private var appState
     @State private var displayWeek: Int = 0
+    @State private var hasInitializedWeek = false
     @State private var showExportPage = false
     /// 点中的课程块（start/end 是合并后的节次范围），非空时弹课程详情。
     @State private var selectedBlock: (start: Int, end: Int, course: Course)?
@@ -336,11 +337,14 @@ struct ScheduleView: View {
         // 旧值；2026-11-23 周一仍显示第 11 周），再把 displayWeek 指过去。
         .onAppear {
             appState.refreshCurrentWeek()
-            displayWeek = appState.currentWeek
+            if !hasInitializedWeek {
+                displayWeek = min(max(appState.currentWeek, 1), 20)
+                hasInitializedWeek = true
+            }
         }
         // 换校时 displayWeek 跟着新学校的当前周走（配合 TabView 的 .id 重建，build 42）。
         .onChange(of: appState.school.id) { _, _ in
-            displayWeek = appState.currentWeek
+            displayWeek = min(max(appState.currentWeek, 1), 20)
         }
         .fullScreenCover(isPresented: $showExportPage) {
             ScheduleExportView()
@@ -383,8 +387,11 @@ struct WeekDateStrip: View {
     /// 该周某天的日期号（1...31）。
     private func dayNumber(for weekday: Int) -> Int {
         let cal = Calendar(identifier: .gregorian)
+        let startWeekday = cal.component(.weekday, from: termStartDate)
+        let daysFromMonday = (startWeekday + 5) % 7
+        let alignedMonday = cal.date(byAdding: .day, value: -daysFromMonday, to: termStartDate) ?? termStartDate
         let offset = (week - 1) * 7 + (weekday - 1)
-        guard let date = cal.date(byAdding: .day, value: offset, to: termStartDate) else { return 0 }
+        guard let date = cal.date(byAdding: .day, value: offset, to: alignedMonday) else { return 0 }
         return cal.component(.day, from: date)
     }
 
@@ -392,8 +399,11 @@ struct WeekDateStrip: View {
     /// 月份取当周周一的（跨月周按周一所在月）。
     private var monthNumber: Int {
         let cal = Calendar(identifier: .gregorian)
+        let startWeekday = cal.component(.weekday, from: termStartDate)
+        let daysFromMonday = (startWeekday + 5) % 7
+        let alignedMonday = cal.date(byAdding: .day, value: -daysFromMonday, to: termStartDate) ?? termStartDate
         let offset = (week - 1) * 7
-        guard let monday = cal.date(byAdding: .day, value: offset, to: termStartDate) else { return 0 }
+        guard let monday = cal.date(byAdding: .day, value: offset, to: alignedMonday) else { return 0 }
         return cal.component(.month, from: monday)
     }
 
@@ -469,7 +479,7 @@ private let coursePalette: [Color] = [
 private func courseColor(for name: String) -> Color {
     var hash = 0
     for scalar in name.unicodeScalars { hash = (hash &* 31) &+ Int(scalar.value) }
-    return coursePalette[abs(hash) % coursePalette.count]
+    return coursePalette[(hash & 0x7fffffff) % coursePalette.count]
 }
 
 /// 把两个颜色按比例混合（取 RGB 平均，保留第一个颜色的透明度）。
@@ -617,12 +627,16 @@ struct ScheduleGrid: View {
                         .font(.system(size: 13, weight: .bold))
                         .foregroundStyle(.black.opacity(0.85))
                     if appearance.showSectionTime {
-                        Text(timeText(school.effectiveStartTimeList[s]))
-                            .font(.system(size: 9))
-                            .foregroundStyle(.black.opacity(0.45))
-                        Text(timeText(school.effectiveEndTimeList[s]))
-                            .font(.system(size: 9))
-                            .foregroundStyle(.black.opacity(0.45))
+                        if school.effectiveStartTimeList.indices.contains(s) {
+                            Text(timeText(school.effectiveStartTimeList[s]))
+                                .font(.system(size: 9))
+                                .foregroundStyle(.black.opacity(0.45))
+                        }
+                        if school.effectiveEndTimeList.indices.contains(s) {
+                            Text(timeText(school.effectiveEndTimeList[s]))
+                                .font(.system(size: 9))
+                                .foregroundStyle(.black.opacity(0.45))
+                        }
                     }
                 }
                 .frame(width: gutter - 6, alignment: .center)
@@ -630,7 +644,8 @@ struct ScheduleGrid: View {
             }
             // 课程块（按天分组，已合并连续节次；用开始节次做 id，同一门课分两段上时 id 不会撞）
             ForEach(visibleWeekdays, id: \.self) { weekday in
-                ForEach(blocks(for: weekday), id: \.start) { block in
+                ForEach(blocks(for: weekday).map { (block: $0, uniqueKey: "\($0.start)-\($0.end)-\($0.course.name)-\($0.isCurrentWeek)") }, id: \.uniqueKey) { item in
+                    let block = item.block
                     let x = gutter + CGFloat(columnIndex(for: weekday)) * columnWidth + 2
                     let y = CGFloat(block.start - 1) * rowHeight + 2
                     let w = columnWidth - 4
@@ -648,7 +663,7 @@ struct ScheduleGrid: View {
                     let border = appearance.borderUsesBlockColor ? blockColor : appearance.borderColor
                     VStack(alignment: appearance.textHorizontalCenter ? .center : .leading, spacing: 2) {
                         if appearance.textVerticalCenter { Spacer() }
-                        if appearance.showStartTime {
+                        if appearance.showStartTime, school.effectiveStartTimeList.indices.contains(block.start - 1) {
                             Text(timeText(school.effectiveStartTimeList[block.start - 1]))
                                 .font(.system(size: 11, weight: .semibold))
                                 .foregroundStyle(text)
