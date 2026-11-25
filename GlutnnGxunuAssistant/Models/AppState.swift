@@ -14,6 +14,7 @@ import UserNotifications
 final class AppLogger: @unchecked Sendable {
     static let shared = AppLogger()
     private let lock = NSLock()
+    private let ioQueue = DispatchQueue(label: "com.h2sy60.AppLogger.io", qos: .utility)
     private var lines: [String] = []
     private let maxLines = 2000
     private let formatter: DateFormatter = {
@@ -38,13 +39,17 @@ final class AppLogger: @unchecked Sendable {
     }
 
     func log(_ message: String) {
-        lock.lock()
+        let snapshot: [String] = {
+            lock.lock()
         defer { lock.unlock() }
         lines.append("[\(formatter.string(from: Date()))] \(message)")
         if lines.count > maxLines { lines.removeFirst(lines.count - maxLines) }
-        // 写回磁盘（全量写，日志量小，一次最多 2000 行）。
-        let text = lines.joined(separator: "\n") + "\n"
-        try? text.write(to: Self.logFileURL, atomically: true, encoding: .utf8)
+            return lines
+        }()
+        ioQueue.async {
+            let text = snapshot.joined(separator: "\n") + "\n"
+            try? text.write(to: Self.logFileURL, atomically: true, encoding: .utf8)
+        }
     }
 
     /// 导出文本：带表头，永远不为空（没日志时写明原因）。
@@ -132,10 +137,17 @@ enum CredentialsStore {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
-            kSecValueData as String: data,
         ]
         SecItemDelete(query as CFDictionary)
-        SecItemAdd(query as CFDictionary, nil)
+        var addQuery = query
+        addQuery[kSecValueData as String] = data
+        let status = SecItemAdd(addQuery as CFDictionary, nil)
+        if status == errSecDuplicateItem {
+            let attributesToUpdate: [String: Any] = [
+                kSecValueData as String: data,
+            ]
+            SecItemUpdate(query as CFDictionary, attributesToUpdate as CFDictionary)
+        }
     }
 
     private static func loadPassword(account: String) -> String? {
@@ -200,6 +212,33 @@ enum ScheduleStore {
     }
 }
 
+/// 通用模块磁盘缓存（按 schoolId + account + key 存 JSON）。
+enum ModuleDiskCache {
+    private static func fileURL(schoolId: SchoolID, account: String, key: String) -> URL {
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let safeAccount = account.replacingOccurrences(of: "/", with: "_")
+        let safeKey = key.replacingOccurrences(of: "/", with: "_")
+        return dir.appendingPathComponent("cache_\(schoolId.rawValue)_\(safeAccount)_\(safeKey).json")
+    }
+
+    static func save<T: Encodable>(_ value: T, schoolId: SchoolID, account: String, key: String) {
+        guard !account.isEmpty,
+              let data = try? JSONEncoder().encode(value) else { return }
+        try? data.write(to: fileURL(schoolId: schoolId, account: account, key: key), options: .atomic)
+    }
+
+    static func load<T: Decodable>(_ type: T.Type, schoolId: SchoolID, account: String, key: String) -> T? {
+        guard !account.isEmpty,
+              let data = try? Data(contentsOf: fileURL(schoolId: schoolId, account: account, key: key)) else { return nil }
+        return try? JSONDecoder().decode(T.self, from: data)
+    }
+
+    static func clear(schoolId: SchoolID, account: String, key: String) {
+        guard !account.isEmpty else { return }
+        try? FileManager.default.removeItem(at: fileURL(schoolId: schoolId, account: account, key: key))
+    }
+}
+
 // MARK: - 登录 / 课表结果
 
 enum LoginOutcome: Equatable {
@@ -214,13 +253,15 @@ enum ScheduleError: Error, LocalizedError, Equatable {
     case sessionExpired
     case network(String)
     case parseError
+    case customParseError(String)
     case empty
 
     var errorDescription: String? {
         switch self {
         case .sessionExpired: return "登录已过期，正在重新登录"
         case .network(let msg): return msg
-        case .parseError: return "课表解析失败"
+        case .parseError: return "数据解析失败"
+        case .customParseError(let msg): return msg
         case .empty: return "本周没有课程"
         }
     }
@@ -640,6 +681,12 @@ final class AppState {
         }
         // 读当前学校 + 学号的课表外观（build 48）。
         loadScheduleAppearance()
+        if let cachedScores = ModuleDiskCache.load(type(of: scores), schoolId: school.id, account: studentId, key: "scores") {
+            scores = cachedScores
+        }
+        if let cachedExams = ModuleDiskCache.load(type(of: exams), schoolId: school.id, account: studentId, key: "exams") {
+            exams = cachedExams
+        }
         // build 64：启动记一条，日志里能看到每次启动的学校和登录态。
         AppLogger.shared.log("app start: school=\(school.id.rawValue) loggedIn=\(isLoggedIn) week=\(currentWeek) cachedCourses=\(courses.count)")
     }
@@ -653,9 +700,9 @@ final class AppState {
     func updateTermFromDate(_ date: Date = Date()) {
         let month = Calendar(identifier: .gregorian).component(.month, from: date)
         let y = Calendar(identifier: .gregorian).component(.year, from: date)
-        if month >= 8 {
+        if month >= 8 || month == 1 {
             semester = "秋"
-            year = y
+            year = month == 1 ? y - 1 : y
         } else {
             semester = "春"
             year = y - 1
@@ -715,6 +762,8 @@ final class AppState {
             updateTermFromDate()
             // 读目标学校 + 学号的课表外观（build 48），和切学校同一帧换掉。
             loadScheduleAppearance()
+            scores = ModuleDiskCache.load(type(of: scores), schoolId: newSchool.id, account: studentId, key: "scores") ?? []
+            exams = ModuleDiskCache.load(type(of: exams), schoolId: newSchool.id, account: studentId, key: "exams") ?? []
         }
         // 若新学校需要验证码，由 switchSchool 内部统一发起唯一请求，
         // 按钮里不要再另起 Task（双 Task 竞态改 showCaptcha 是崩溃源之一）。
@@ -1015,6 +1064,9 @@ final class AppState {
     }
 
     func logout() {
+        let oldStudentId = studentId
+        ModuleDiskCache.clear(schoolId: school.id, account: oldStudentId, key: "scores")
+        ModuleDiskCache.clear(schoolId: school.id, account: oldStudentId, key: "exams")
         AppLogger.shared.log("logout: school=\(school.id.rawValue)")
         isLoggedIn = false
         studentId = ""
@@ -1205,6 +1257,7 @@ final class AppState {
                 list = try await GXVNUService.fetchScores(year: filterYear, term: filterTerm)
             }
             scores = list
+            ModuleDiskCache.save(scores, schoolId: school.id, account: studentId, key: "scores")
             AppLogger.shared.log("scores \(school.id) ok, \(list.count) items")
             if list.isEmpty { scoresError = "暂无成绩" }
         } catch let error as ScheduleError {
@@ -1221,6 +1274,7 @@ final class AppState {
                         do {
                             let list = try await GXVNUService.fetchScores(year: filterYear, term: filterTerm)
                             scores = list
+                        ModuleDiskCache.save(scores, schoolId: school.id, account: studentId, key: "scores")
                             if list.isEmpty { scoresError = "暂无成绩" }
                         } catch {
                             scoresError = (error as? LocalizedError)?.errorDescription ?? "拉取成绩失败"
@@ -1257,6 +1311,7 @@ final class AppState {
                 list = try await GXVNUService.fetchExams(year: year, semester: semester)
             }
             exams = list
+            ModuleDiskCache.save(exams, schoolId: school.id, account: studentId, key: "exams")
             AppLogger.shared.log("exams \(school.id) ok, \(list.count) items")
             if list.isEmpty { examsError = "暂无考试安排" }
             // build 63：考试拉成功后，考试提醒开了就重排。
@@ -1278,6 +1333,7 @@ final class AppState {
                         do {
                             let list = try await GXVNUService.fetchExams(year: year, semester: semester)
                             exams = list
+                        ModuleDiskCache.save(exams, schoolId: school.id, account: studentId, key: "exams")
                             if list.isEmpty { examsError = "暂无考试安排" }
                         } catch {
                             examsError = (error as? LocalizedError)?.errorDescription ?? "拉取考试失败"
@@ -1293,6 +1349,32 @@ final class AppState {
             }
         } catch {
             examsError = (error as? LocalizedError)?.errorDescription ?? "拉取考试失败"
+        }
+    }
+
+    func performWithAutoRelogin<T>(_ operation: @escaping () async throws -> T) async throws -> T {
+        do {
+            return try await operation()
+        } catch ScheduleError.sessionExpired {
+            if school.id == .gxvnu {
+                let reloginOutcome = await reloginGXVNU()
+                if reloginOutcome == .success {
+                    return try await operation()
+                } else if reloginOutcome == .captchaRequired {
+                    captchaDialogText = ""
+                    captchaChecking = false
+                    showCaptchaDialog = true
+                    Task { await fetchCaptcha() }
+                }
+            } else if school.id == .gut {
+                if !studentId.isEmpty && !password.isEmpty {
+                    captchaDialogText = ""
+                    captchaChecking = false
+                    showCaptchaDialog = true
+                    Task { await fetchCaptcha() }
+                }
+            }
+            throw ScheduleError.sessionExpired
         }
     }
 
