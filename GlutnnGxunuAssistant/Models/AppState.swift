@@ -764,6 +764,7 @@ final class AppState {
             loginError = nil
             captchaImageData = nil
             captchaText = ""
+            showCaptchaDialog = false
             // 桂工每次登录都要验证码，行直接亮出来（图到了再填）；职师院默认不要。
             showCaptcha = newSchool.captchaRequired
             updateTermFromDate()
@@ -1088,11 +1089,14 @@ final class AppState {
         ScheduleStore.clear(schoolId: school.id)
         scores = []
         scoresError = nil
+        exams = []
+        examsError = nil
         scheduleError = nil
         loginError = nil
         captchaImageData = nil
         captchaText = ""
         showCaptcha = false
+        showCaptchaDialog = false
         NetworkClient.shared.cookies.clearAll()
         // 退出登录清掉全部已存账号（下次启动不再自动登录）。
         CredentialsStore.clearAll()
@@ -1130,19 +1134,23 @@ final class AppState {
             isRefreshingSchedule = false
         }
 
+        let currentSchoolId = school.id
+        let targetYear = year
+        let targetSemester = semester
         do {
-            let list: [Course]
-            if school.id == .gut {
-                list = try await GUTService.fetchSchedule(year: year, semester: semester)
-                // 桂工课表不带姓名；名字空时按旧项目 getStudentName 单独取一次
-                // （旧项目登录后就调 getStudentName；这里拉课表时补取，登录后和
-                // 启动静默登录都会走到，取到就进缓存，下次不再多发一次请求）。
+            let list = try await performWithAutoRelogin {
+                if currentSchoolId == .gut {
+                    return try await GUTService.fetchSchedule(year: targetYear, semester: targetSemester)
+                } else {
+                    return try await GXVNUService.fetchSchedule(year: targetYear, semester: targetSemester)
+                }
+            }
+            guard school.id == currentSchoolId else { return }
+            if currentSchoolId == .gut {
                 if studentName.isEmpty, let name = await GUTService.fetchStudentName(), !name.isEmpty {
                     studentName = name
                 }
             } else {
-                list = try await GXVNUService.fetchSchedule(year: year, semester: semester)
-                // 课表响应里顺带取到的姓名（xsxx.XM）。
                 if let name = GXVNUService.lastStudentName, !name.isEmpty {
                     studentName = name
                 }
@@ -1161,39 +1169,7 @@ final class AppState {
         } catch let error as ScheduleError {
             AppLogger.shared.log("schedule \(school.id) error: \(error.errorDescription ?? "未知")")
             if case .sessionExpired = error {
-                // 会话过期：职师院可静默重登一次再拉；桂工每次都要验证码，
-                // 空验证码重登必失败还记一次失败，不在这里重登——
-                // 只记错误，等首页弹“需要验证”，点按走验证码弹窗重登。
-                // 注意：不要在这里把 isLoggedIn 置 false——isLoggedIn 是“有已存账号”
-                // （旧版语义），会话过期不等于账号没了；置 false 会让首页的
-                // 刷新/成绩/考试直接弹整页登录，验证码弹窗那条路就走不通了。
-                if school.id == .gut {
-                    scheduleError = "登录已过期，请重新登录"
-                } else {
-                    // 职师院重登（reloginGXVNU：空验证码登，最多试两次；
-                    // 两次都要验证码才直接弹验证码弹窗，不经过“需要验证”）。
-                    let reloginOutcome = await reloginGXVNU()
-                    if reloginOutcome == .success {
-                        do {
-                            let list = try await GXVNUService.fetchSchedule(year: year, semester: semester)
-                            if let name = GXVNUService.lastStudentName, !name.isEmpty {
-                                studentName = name
-                            }
-                            courses = list
-                            if !list.isEmpty {
-                                ScheduleStore.save(schoolId: school.id, courses: list, studentName: studentName)
-                            }
-                            handleScheduleRefreshed()
-                        } catch {
-                            scheduleError = (error as? LocalizedError)?.errorDescription ?? "拉取课表失败"
-                        }
-                    } else if reloginOutcome == .captchaRequired {
-                        // 验证码弹窗已弹出，不再挂“需要验证”提示条。
-                        scheduleError = nil
-                    } else {
-                        scheduleError = "登录已过期，请重新登录"
-                    }
-                }
+                scheduleError = "登录已过期，请重新登录"
             } else {
                 scheduleError = error.errorDescription
             }
@@ -1269,8 +1245,11 @@ final class AppState {
                 return try await GXVNUService.fetchScores(year: filterYear, term: filterTerm)
             }
         }
+            guard school.id == currentSchoolId else { return }
         scores = list
+            if filterYear == nil && filterTerm == nil {
         ModuleDiskCache.save(scores, schoolId: school.id, account: studentId, key: "scores")
+            }
         AppLogger.shared.log("scores \(school.id) ok, \(list.count) items")
         if list.isEmpty { scoresError = "暂无成绩" }
     } catch let error as ScheduleError {
@@ -1290,6 +1269,7 @@ final class AppState {
     /// 拉考试安排（build 43 新增）。会话过期时自动重登一次再试（同课表/成绩）。
     func refreshExams() async {
         guard isLoggedIn else { return }
+        guard !examsLoading else { return }
         examsLoading = true
         examsError = nil
         defer { examsLoading = false }
@@ -1305,6 +1285,7 @@ final class AppState {
                 return try await GXVNUService.fetchExams(year: currentYear, semester: currentSemester)
             }
         }
+            guard school.id == currentSchoolId else { return }
             exams = list
             ModuleDiskCache.save(exams, schoolId: school.id, account: studentId, key: "exams")
             AppLogger.shared.log("exams \(school.id) ok, \(list.count) items")
@@ -1344,15 +1325,18 @@ final class AppState {
         do {
             return try await operation()
         } catch ScheduleError.sessionExpired {
+            if showCaptchaDialog {
+                let ok = await waitForCaptchaRelogin()
+                if ok {
+                    return try await operation()
+                }
+                throw ScheduleError.sessionExpired
+            }
             if school.id == .gxvnu {
                 let reloginOutcome = await reloginGXVNU()
                 if reloginOutcome == .success {
                     return try await operation()
                 } else if reloginOutcome == .captchaRequired {
-                    captchaDialogText = ""
-                    captchaChecking = false
-                    showCaptchaDialog = true
-                    Task { await fetchCaptcha() }
                 let ok = await waitForCaptchaRelogin()
                 if ok {
                     return try await operation()
@@ -1416,9 +1400,12 @@ enum ReminderManager {
         let termStart = school.effectiveTermStartDate
         var count = 0
         for course in courses {
-            guard course.startSection >= 1,
+            guard count < 60 else { break }
+            guard (1...7).contains(course.weekday),
+                  course.startSection >= 1,
                   course.startSection <= school.effectiveStartTimeList.count else { continue }
             for w in course.weeks where w >= week && w <= week + 1 {
+                guard count < 60 else { break }
                 guard let day = cal.date(byAdding: .day, value: (w - 1) * 7 + (course.weekday - 1), to: termStart),
                       let start = cal.date(
                           bySettingHour: school.effectiveStartTimeList[course.startSection - 1].0,
@@ -1521,6 +1508,19 @@ extension AppState {
     func clearAllCachedData() {
         ScheduleStore.clear(schoolId: .gut)
         ScheduleStore.clear(schoolId: .gxvnu)
+        let moduleKeys = ["scores", "exams", "gxvnu_career"]
+        if !studentId.isEmpty {
+            for key in moduleKeys {
+                ModuleDiskCache.clear(schoolId: school.id, account: studentId, key: key)
+            }
+        }
+        for sid in [SchoolID.gut, .gxvnu] {
+            if let saved = CredentialsStore.load(schoolId: sid), !saved.studentId.isEmpty {
+                for key in moduleKeys {
+                    ModuleDiskCache.clear(schoolId: sid, account: saved.studentId, key: key)
+                }
+            }
+        }
         courses = []
         scores = []
         exams = []
@@ -1596,6 +1596,7 @@ extension AppState {
             backup.gxvnuTermStartOverride.map { Date(timeIntervalSince1970: $0) }, for: .gxvnu)
         AppSettings.setTotalWeeks(backup.gutTotalWeeks, for: .gut)
         AppSettings.setTotalWeeks(backup.gxvnuTotalWeeks, for: .gxvnu)
+        updateTermFromDate()
         ScheduleStore.save(schoolId: .gut, courses: backup.gutCourses, studentName: backup.gutStudentName)
         ScheduleStore.save(schoolId: .gxvnu, courses: backup.gxvnuCourses, studentName: backup.gxvnuStudentName)
         if let cached = ScheduleStore.load(schoolId: school.id) {
@@ -1615,6 +1616,8 @@ extension AppState {
                 await ReminderManager.rescheduleClassReminders(
                     courses: restoredCourses, school: currentSchool, leadMinutes: leadMinutes)
             }
+        } else {
+            ReminderManager.cancelClassReminders()
         }
         if AppSettings.examReminderEnabled {
             let currentExams = exams
@@ -1622,6 +1625,8 @@ extension AppState {
             Task {
                 await ReminderManager.rescheduleExamReminders(exams: currentExams, leadDays: leadDays)
             }
+        } else {
+            ReminderManager.cancelExamReminders()
         }
         AppLogger.shared.log("backup imported")
         return true
