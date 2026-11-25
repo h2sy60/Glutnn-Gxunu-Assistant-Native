@@ -7,7 +7,9 @@ import PhotosUI // 首页设置自定义壁纸：从相册选图（build 69）�
 /// 我的（Flutter 版形态）：壁纸 + 玻璃卡片。
 struct MineView: View {
     @Environment(AppState.self) private var appState
-
+    @State private var showLogoutConfirm = false
+    @State private var showSwitchAccountConfirm = false
+    
     /// 玻璃卡片容器。
     private func glassCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         content()
@@ -51,7 +53,7 @@ struct MineView: View {
                                     }
                                     Spacer()
                                     Button("更换账号") {
-                                        appState.switchAccount()
+                                        showSwitchAccountConfirm = true
                                     }
                                     .font(.subheadline)
                                     .foregroundStyle(.white)
@@ -206,7 +208,7 @@ struct MineView: View {
 
                             // 退出登录
                             Button(role: .destructive) {
-                                appState.logout()
+                                showLogoutConfirm = true
                             } label: {
                                 Text("退出登录")
                                     .foregroundStyle(.white)
@@ -221,6 +223,19 @@ struct MineView: View {
                 }
             }
             .navigationBarHidden(true)
+            .alert("确认退出登录", isPresented: $showLogoutConfirm) {
+                Button("退出登录", role: .destructive) { appState.logout() }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("退出后需要重新登录教务系统。")
+            }
+            .alert("确认更换账号", isPresented: $showSwitchAccountConfirm) {
+                Button("更换账号", role: .destructive) { appState.switchAccount() }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("更换账号将退出当前登录状态。")
+            } 
+            
         }
     }
 }
@@ -257,6 +272,7 @@ struct ScheduleDataView: View {
     /// 初始加载完成才保存（否则 .task 里填初始值也会触发 onChange，
     /// 进页就误写一个开学日期覆盖）。
     @State private var isLoaded = false
+    @State private var isResettingDate = false
 
     var body: some View {
         ZStack {
@@ -284,6 +300,10 @@ struct ScheduleDataView: View {
                 Section {
                     DatePicker("开学日期", selection: $termStartDate, displayedComponents: .date)
                         .onChange(of: termStartDate) { _, newValue in
+                        if isResettingDate {
+                            isResettingDate = false
+                            return
+                        }
                             guard isLoaded else { return }
                             AppSettings.setTermStartDateOverride(newValue, for: appState.school.id)
                             hasTermOverride = true
@@ -297,6 +317,9 @@ struct ScheduleDataView: View {
                         }
                     if hasTermOverride {
                         Button("恢复默认开学日期") {
+                        if termStartDate != appState.school.termStartDate {
+                            isResettingDate = true
+                        }
                             AppSettings.setTermStartDateOverride(nil, for: appState.school.id)
                             termStartDate = appState.school.termStartDate
                             hasTermOverride = false
@@ -653,7 +676,9 @@ struct GeneralSettingsView: View {
         .fileImporter(isPresented: $showingImportPicker, allowedContentTypes: [.json]) { result in
             switch result {
             case .success(let url):
-                let ok = appState.importBackup(from: url)
+                let accessed = url.startAccessingSecurityScopedResource()
+                    defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+                    let ok = appState.importBackup(from: url)
                 importMessage = ok ? "备份已恢复" : "导入失败：文件格式不对"
             case .failure:
                 importMessage = "导入失败：打不开这个文件"
@@ -775,7 +800,7 @@ struct ScoreView: View {
     /// 可选学年：从入学年（2026）到当前年。
     private var availableYears: [Int] {
         let currentYear = Calendar.current.component(.year, from: Date())
-        let startYear = 2026
+        let startYear = currentYear - 5
         guard currentYear >= startYear else { return [startYear] }
         return Array(startYear...currentYear)
     }
@@ -893,7 +918,7 @@ struct ScoreView: View {
                                 // build 63 通用设置：成绩每行显示什么（原始成绩/绩点/数字分）。
                                 Text(scoreRowText(s))
                                     .font(.headline)
-                                    .foregroundStyle(s.score < 60 && s.score > 0 ? .red : .primary)
+                                    .foregroundStyle(s.score < 60 && s.score >= 0 ? .red : .primary)
                             }
                             .padding(.vertical, 4)
                         }
@@ -913,7 +938,7 @@ struct ScoreView: View {
             }
             scores = appState.scores
         }
-        .onChange(of: appState.scores.count) { _, _ in
+        .onChange(of: appState.scores.map { "\($0.id)-\($0.courseName)-\($0.score)-\($0.credit)-\($0.gradePoint)" }) { _, _ in
             scores = appState.scores
         }
         .onChange(of: selectedYear) { _, _ in
@@ -1013,7 +1038,7 @@ struct ExamsView: View {
             }
             exams = appState.exams
         }
-        .onChange(of: appState.exams.count) { _, _ in
+        .onChange(of: appState.exams.map { "\($0.examName)-\($0.time)-\($0.location)-\($0.seatNumber)" }) { _, _ in
             exams = appState.exams
         }
     }
@@ -1171,8 +1196,10 @@ struct AboutView: View {
 
     /// 语义版本比较：latest 是否比 current 新（按 . 分段逐段比数字）。
     private func isNewerVersion(_ latest: String, than current: String) -> Bool {
-        let l = latest.split(separator: ".").compactMap { Int($0) }
-        let c = current.split(separator: ".").compactMap { Int($0) }
+        let cleanLatest = latest.split(separator: "-", maxSplits: 1).first.map(String.init) ?? latest
+        let cleanCurrent = current.split(separator: "-", maxSplits: 1).first.map(String.init) ?? current
+        let l = cleanLatest.split(separator: ".").compactMap { Int($0) }
+        let c = cleanCurrent.split(separator: ".").compactMap { Int($0) }
         for i in 0..<max(l.count, c.count) {
             let lv = i < l.count ? l[i] : 0
             let cv = i < c.count ? c[i] : 0
