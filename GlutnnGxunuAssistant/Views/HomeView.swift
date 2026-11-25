@@ -324,7 +324,6 @@ struct HomeView: View {
             // 验证码弹窗已弹（职师院两次都要求验证码）：等用户输码，
             // 结果提示条由 confirmCaptchaDialog 发，这里不发任何提示条。
         } else if appState.scheduleError == nil {
-)
             appState.showToast(.success, "数据已更新!", duration: 1)
         } else if wasLoggedIn {
             // build 67：只有真是会话过期才弹“需要验证”走验证码弹窗；
