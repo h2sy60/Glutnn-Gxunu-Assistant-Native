@@ -973,7 +973,7 @@ struct ExamsView: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                     Button("重新拉取") {
-                        Task { await appState.refreshExams() }
+                        Task { await appState.refreshExams(); exams = appState.exams }
                     }
                 }
             } else if appState.exams.isEmpty {
@@ -1026,7 +1026,7 @@ struct ExamsView: View {
                 }
                 .listStyle(.insetGrouped)
                 .refreshable {
-                    await appState.refreshExams()
+                    await appState.refreshExams(); exams = appState.exams
                 }
             }
         }
@@ -1531,7 +1531,7 @@ struct GUTClassroomQueryView: View {
 
     private func loadBuildings() async {
         guard !isLoadingOptions else { return }
-        isLoadingOptions = true
+        isLoadingOptions = true; errorMessage = nil
         defer { isLoadingOptions = false }
         do {
             buildings = try await appState.performWithAutoRelogin { try await GUTService.fetchClassroomBuildings() }
@@ -1954,7 +1954,7 @@ struct GXVNUEvaluationsView: View {
     @State private var evaluations: [GXVNUEvaluationItem] = []
     @State private var stats: GXVNUEvaluationStats? = nil
     @State private var isLoading = false
-    @State private var errorMessage: String? = nil
+    @State private var errorMessage: String? = nil; @Environment(AppState.self) private var appState
 
     var body: some View {
         ZStack {
@@ -2056,10 +2056,10 @@ struct GXVNUEvaluationsView: View {
         guard !isLoading else { return }
         isLoading = true
         defer { isLoading = false }
-        do {
+        do { let (s, list) = try await appState.performWithAutoRelogin {
             async let fetchedStats = GXVNUService.fetchEvaluationStats()
             async let fetchedList = GXVNUService.fetchEvaluations()
-            let (s, list) = try await (fetchedStats, fetchedList)
+            return try await (fetchedStats, fetchedList) }
             stats = s
             evaluations = list
             errorMessage = nil
@@ -2074,7 +2074,7 @@ struct GXVNUEvaluationsView: View {
 struct GXVNUCreditsView: View {
     @State private var courses: [GXVNUSelectedCourse] = []
     @State private var isLoading = false
-    @State private var errorMessage: String? = nil
+    @State private var errorMessage: String? = nil; @Environment(AppState.self) private var appState
 
     /// 已选总学分。
     private var totalCredits: Double {
@@ -2165,7 +2165,7 @@ struct GXVNUCreditsView: View {
         isLoading = true
         defer { isLoading = false }
         do {
-            courses = try await GXVNUService.fetchSelectedCourses()
+            courses = try await appState.performWithAutoRelogin { try await GXVNUService.fetchSelectedCourses() }
             errorMessage = nil
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? "拉取失败，请稍后重试"
@@ -2182,7 +2182,7 @@ struct GXVNUTeachingPlanView: View {
     @State private var plans: [GXVNUTeachingPlan] = []
     @State private var myMajor: String = ""
     @State private var isLoading = false
-    @State private var errorMessage: String? = nil
+    @State private var errorMessage: String? = nil; @Environment(AppState.self) private var appState
 
     var body: some View {
         ZStack {
@@ -2250,10 +2250,10 @@ struct GXVNUTeachingPlanView: View {
         guard !isLoading else { return }
         isLoading = true
         defer { isLoading = false }
-        do {
+        do { let (major, fetchedPlans) = try await appState.performWithAutoRelogin {
             let ids = try await GXVNUService.resolveAcademicIDs()
-            myMajor = ids.major
-            plans = try await GXVNUService.fetchTeachingPlan(ids: ids)
+            let fetchedPlans = try await GXVNUService.fetchTeachingPlan(ids: ids)
+            return (ids.major, fetchedPlans) }; myMajor = major; plans = fetchedPlans
             errorMessage = nil
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? "拉取失败，请稍后重试"
