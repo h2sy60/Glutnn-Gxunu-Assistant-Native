@@ -1534,7 +1534,7 @@ struct GUTClassroomQueryView: View {
         isLoadingOptions = true
         defer { isLoadingOptions = false }
         do {
-            buildings = try await GUTService.fetchClassroomBuildings()
+            buildings = try await appState.performWithAutoRelogin { try await GUTService.fetchClassroomBuildings() }
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? "拉取教学楼失败"
         }
@@ -1546,12 +1546,15 @@ struct GUTClassroomQueryView: View {
         hasQueried = true
         errorMessage = nil
         defer { isQuerying = false }
+        let building = selectedBuildingId
+        let week = String(selectedWeek)
+        let day = String(selectedDay)
         do {
-            rooms = try await GUTService.fetchFreeClassrooms(
-                building: selectedBuildingId,
-                week: String(selectedWeek),
-                dayOfWeek: String(selectedDay)
-            )
+            rooms = try await appState.performWithAutoRelogin { try await GUTService.fetchFreeClassrooms(
+                building: building,
+                week: week,
+                dayOfWeek: day
+            ) }
         } catch let error as ScheduleError {
             errorMessage = error == .sessionExpired ? "登录已过期，请重新登录" : error.errorDescription
             rooms = []
@@ -1621,6 +1624,7 @@ private struct CareerStat: View {
 /// 桂工生涯预估：大学进程 + 全部/专业课程 + 成绩合格/重修补考/成绩未知
 /// （数据来自教学计划，旧项目 teachingPlanPage type 1 同款）。
 struct GUTCareerView: View {
+    @Environment(AppState.self) private var appState
     @State private var plan: GUTTeachingPlan? = nil
     @State private var isLoading = false
     @State private var errorMessage: String? = nil
@@ -1689,7 +1693,7 @@ struct GUTCareerView: View {
         isLoading = true
         defer { isLoading = false }
         do {
-            plan = try await GUTService.fetchTeachingPlan()
+            plan = try await appState.performWithAutoRelogin { try await GUTService.fetchTeachingPlan() }
             errorMessage = nil
         } catch let error as ScheduleError {
             errorMessage = error == .sessionExpired ? "登录已过期，请重新登录" : error.errorDescription
@@ -1861,6 +1865,7 @@ struct GXVNUCareerView: View {
 // MARK: - 待办事项（build 50）：调课/补课提醒（index_cxDbsy）
 
 struct GXVNUToDosView: View {
+    @Environment(AppState.self) private var appState
     @State private var todos: [GXVNUTodoItem] = []
     @State private var isLoading = false
     @State private var errorMessage: String? = nil
@@ -1932,7 +1937,7 @@ struct GXVNUToDosView: View {
         isLoading = true
         defer { isLoading = false }
         do {
-            todos = try await GXVNUService.fetchTodos()
+            todos = try await appState.performWithAutoRelogin { try await GXVNUService.fetchTodos() }
             errorMessage = nil
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? "拉取失败，请稍后重试"
