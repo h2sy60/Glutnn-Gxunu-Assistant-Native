@@ -466,18 +466,15 @@ enum GUTService {
         var courses: [Course] = []
         // 外层行：从 <tr ... infolist_common ...> 到内嵌 </table> 后的 </tr>。
         // 分组 1=内嵌表之前的 td，2=内嵌表体，3=内嵌表之后的 td。
-        let rowPattern = #"<tr[^>]*infolist_common[^>]*>([\s\S]*?)</tr>"#
-        guard let rowRegex = try? NSRegularExpression(pattern: rowPattern, options: [.caseInsensitive, .dotMatchesLineSeparators]) else {
-            return []
-        }
-        let range = NSRange(html.startIndex..., in: html)
-        let matches = rowRegex.matches(in: html, options: [], range: range)
-        AppLogger.shared.log("GUT parse: infolist rows matched=\(matches.count)")
-
-        for match in matches {
-            guard match.numberOfRanges >= 2,
-                  let rowRange = Range(match.range(at: 1), in: html) else { continue }
-                  let rowContent = String(html[rowRange])
+       let rowStartPattern = #"<tr[^>]*infolist_common[^>]*>"#
+       guard let rowStartRegex = try? NSRegularExpression(pattern: rowStartPattern, options: [.caseInsensitive]) else { return [] }
+       let range = NSRange(html.startIndex..., in: html)
+       let starts = rowStartRegex.matches(in: html, options: [], range: range).compactMap { Range($0.range, in: html) }
+       AppLogger.shared.log("GUT parse: infolist rows matched=\(starts.count)")
+       for i in starts.indices {
+           let sliceStart = starts[i].upperBound
+           let sliceEnd = (i + 1 < starts.count) ? starts[i + 1].lowerBound : html.endIndex
+           let rowContent = String(html[sliceStart..<sliceEnd])
             guard let innerRegex = try? NSRegularExpression(pattern: #"<table[^>]*class="[^"]*none[^"]*"[^>]*>([\s\S]*?)</table>"#, options: [.caseInsensitive, .dotMatchesLineSeparators]), let innerMatch = innerRegex.firstMatch(in: rowContent, options: [], range: NSRange(rowContent.startIndex..., in: rowContent)), let tableFullRange = Range(innerMatch.range(at: 0), in: rowContent), let innerRange = Range(innerMatch.range(at: 1), in: rowContent) else { continue }
             let outerHTML = String(rowContent[..<tableFullRange.lowerBound]); let innerHTML = String(rowContent[innerRange])
 
@@ -976,16 +973,15 @@ enum GUTService {
     /// 每行 tr.infolist_common，[0]=教室号、[1]=座位数、[3]=考试座位数、[5]=类型；
     /// 嵌套表第二行 11 格，含 &nbsp; 即该节空闲。
     static func parseFreeClassroomsHTML(_ html: String) throws -> [GUTClassroom] {
-        guard let rowRegex = try? NSRegularExpression(
-            pattern: #"<tr[^>]*infolist_common[^>]*>([\s\S]*?)</tr>"#,
-            options: [.caseInsensitive, .dotMatchesLineSeparators]) else { return [] }
-        let range = NSRange(html.startIndex..., in: html)
-        var rooms: [GUTClassroom] = []
-        for match in rowRegex.matches(in: html, options: [], range: range) {
-            guard match.numberOfRanges >= 2,
-                  let rowRange = Range(match.range(at: 1), in: html) else { continue }
-            let rowHTML = String(html[rowRange])
-            // 嵌套表单独解析占用；行里去掉嵌套表后再取外层格子。
+       guard let rowStartRegex = try? NSRegularExpression(pattern: #"<tr[^>]*infolist_common[^>]*>"#, options: [.caseInsensitive]) else { return [] }
+       let range = NSRange(html.startIndex..., in: html)
+       let starts = rowStartRegex.matches(in: html, options: [], range: range).compactMap { Range($0.range, in: html) }
+       var rooms: [GUTClassroom] = []
+       for i in starts.indices {
+           let sliceStart = starts[i].upperBound
+           let sliceEnd = (i + 1 < starts.count) ? starts[i + 1].lowerBound : html.endIndex
+           let rowHTML = String(html[sliceStart..<sliceEnd])
+           // 嵌套表单独解析占用；行里去掉嵌套表后再取外层格子。
             let nestedTable = firstMatch(in: rowHTML, pattern: #"<table[\s\S]*?</table>"#) ?? ""
             let rowWithoutTable = nestedTable.isEmpty ? rowHTML : rowHTML.replacingOccurrences(of: nestedTable, with: "")
             let cells = tdTexts(rowWithoutTable)
