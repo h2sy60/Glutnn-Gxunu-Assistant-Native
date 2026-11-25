@@ -211,7 +211,6 @@ struct LoginView: View {
                                                   cachedCaptchaImage = newData.flatMap { UIImage(data: $0) }
     }
 }
-    }
     private var schoolPickerSection: some View {
      HStack(spacing: 0) {
                         ForEach(schools, id: \.id) { school in
