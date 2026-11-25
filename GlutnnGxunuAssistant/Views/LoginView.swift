@@ -77,29 +77,7 @@ struct LoginView: View {
                     }
 
                     // 学校选择（自绘分段：选中 = 白底黑字加粗，未选中 = 透明底白字）
-                    HStack(spacing: 0) {
-                        ForEach(schools, id: \.id) { school in
-                            Button {
-                                // 先收焦点，再原子化切换学校（验证码由 switchSchool
-                                // 内部统一拉取，按钮里不再另起 Task）。
-                                focusedField = nil
-                                appState.switchSchool(school)
-                            } label: {
-                                Text(school.displayName)
-                                    .font(.system(size: 15, weight: appState.school.id == school.id ? .bold : .regular))
-                                    .foregroundStyle(appState.school.id == school.id ? .black : .white)
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 10)
-                            }
-                            .background(
-                                appState.school.id == school.id ? Color.white : Color.clear,
-                                in: RoundedRectangle(cornerRadius: 10)
-                            )
-                               .disabled(appState.loginLoading)                     
-                        }
-                    }
-                    .padding(4)
-                    .background(Color.white.opacity(0.2), in: RoundedRectangle(cornerRadius: 14))
+                   schoolPickerSection
 
                     VStack(spacing: 16) {
                         // 学号（桂工数字键盘，职师院全键盘）
@@ -234,6 +212,31 @@ struct LoginView: View {
 }
     }
     }
+private var schoolPickerSection: some View {
+     HStack(spacing: 0) {
+                        ForEach(schools, id: \.id) { school in
+                            Button {
+                                // 先收焦点，再原子化切换学校（验证码由 switchSchool
+                                // 内部统一拉取，按钮里不再另起 Task）。
+                                focusedField = nil
+                                appState.switchSchool(school)
+                            } label: {
+                                Text(school.displayName)
+                                    .font(.system(size: 15, weight: appState.school.id == school.id ? .bold : .regular))
+                                    .foregroundStyle(appState.school.id == school.id ? .black : .white)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 10)
+                            }
+                            .background(
+                                appState.school.id == school.id ? Color.white : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 10)
+                            )
+                               .disabled(appState.loginLoading)                     
+                        }
+                    }
+                    .padding(4)
+                    .background(Color.white.opacity(0.2), in: RoundedRectangle(cornerRadius: 14))
+}
 }
 
 #Preview {
