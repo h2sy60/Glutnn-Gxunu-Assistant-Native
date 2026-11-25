@@ -131,19 +131,26 @@ struct CustomSectionTimes: Codable {
     var end: [[Int]]
 
     static func key(for schoolId: SchoolID) -> String { "CustomSectionTimes.\(schoolId.rawValue)" }
-
+    private enum CacheEntry { case some(CustomSectionTimes); case none }
+    private static let cacheLock = NSLock()
+    nonisolated(unsafe) private static var cache: [SchoolID: CacheEntry] = [:]
+    
     static func load(for schoolId: SchoolID) -> CustomSectionTimes? {
-        guard let data = UserDefaults.standard.data(forKey: key(for: schoolId)) else { return nil }
-        return try? JSONDecoder().decode(CustomSectionTimes.self, from: data)
+        cacheLock.lock()
+        if let entry = cache[schoolId] { cacheLock.unlock(); switch entry { case .some(let times): return times; case .none: return nil } }
+        cacheLock.unlock()
+        let loaded = UserDefaults.standard.data(forKey: key(for: schoolId)).flatMap { try? JSONDecoder().decode(CustomSectionTimes.self, from: $0) }
+        cacheLock.lock(); cache[schoolId] = loaded.map(CacheEntry.some) ?? .none; cacheLock.unlock()
+        return loaded
     }
 
     static func save(_ times: CustomSectionTimes, for schoolId: SchoolID) {
         guard let data = try? JSONEncoder().encode(times) else { return }
-        UserDefaults.standard.set(data, forKey: key(for: schoolId))
+        UserDefaults.standard.set(data, forKey: key(for: schoolId)); cacheLock.lock(); cache[schoolId] = .some(times); cacheLock.unlock()
     }
 
     static func reset(for schoolId: SchoolID) {
-        UserDefaults.standard.removeObject(forKey: key(for: schoolId))
+        UserDefaults.standard.removeObject(forKey: key(for: schoolId)); cacheLock.lock(); cache[schoolId] = .none; cacheLock.unlock()
     }
 }
 
