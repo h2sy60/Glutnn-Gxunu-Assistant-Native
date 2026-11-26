@@ -399,7 +399,8 @@ struct ScheduleAppearance: Codable, Equatable {
     var textOverlaysBlockColor: Bool
     /// 格子文字水平居中。默认 true（当前就是居中）。
     var textHorizontalCenter: Bool
-    /// 格子文字垂直居中。默认 false（当前是顶部排布）。
+    /// 格子文字垂直居中。默认 true（居中，和 build 85 的默认观感一致；
+    /// build 86 起 frame 显式按此开关对齐，关掉则顶部排布）。
     var textVerticalCenter: Bool
     /// 自定义格子高度（行高，40...120），nil = 自动按屏幕算。默认 nil。
     var customRowHeight: Double?
@@ -440,7 +441,7 @@ struct ScheduleAppearance: Codable, Equatable {
         borderUsesBlockColor: false,
         textOverlaysBlockColor: false,
         textHorizontalCenter: true,
-        textVerticalCenter: false,
+        textVerticalCenter: true,
         customRowHeight: nil,
         nonCurrentWeekOpacity: 0.5,
         showNonCurrentWeekCourses: false,
@@ -1064,6 +1065,16 @@ final class AppState {
         activeLoginKey = key
         activeLoginToken = token
         let outcome = await task.value
+        // 登录结果总览（只记结果类型，不记学号/密码/验证码内容），
+        // 完整登录一遍后看日志能直接定位卡在哪一步。
+        switch outcome {
+        case .success:
+            AppLogger.shared.log("login outcome: school=\(currentSchool.id.rawValue) success")
+        case .captchaRequired:
+            AppLogger.shared.log("login outcome: school=\(currentSchool.id.rawValue) captchaRequired")
+        case .failure(let message):
+            AppLogger.shared.log("login outcome: school=\(currentSchool.id.rawValue) failure: \(message)")
+        }
         // 只清自己这一个任务，别把排队新建的任务误清掉。
         if activeLoginToken == token {
             activeLoginTask = nil

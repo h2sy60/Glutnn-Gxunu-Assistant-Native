@@ -360,6 +360,7 @@ struct ScheduleView: View {
                     startSection: block.start,
                     endSection: block.end,
                     school: appState.school,
+                    blockColor: courseColorMap[block.course.name] ?? courseColor(for: block.course.name),
                     onDismiss: { selectedBlock = nil }
                 )
             }
@@ -729,6 +730,9 @@ struct CourseDetailPopup: View {
     let startSection: Int
     let endSection: Int
     let school: SchoolConfig
+    /// 课表块的实际颜色（colorMap 分色），圆点和块同色；
+    /// 别再用 courseColor(for:) 哈希取色，和块是两套算法对不上。
+    let blockColor: Color
     let onDismiss: () -> Void
 
     /// 星期字（一..日）。
@@ -778,7 +782,7 @@ struct CourseDetailPopup: View {
                 // 标题行：课程色圆点 + 课名 + 玻璃 X。
                 HStack(spacing: 10) {
                     Circle()
-                        .fill(courseColor(for: course.name))
+                        .fill(blockColor)
                         .frame(width: 12, height: 12)
                     Text(course.name)
                         .font(.system(size: 20, weight: .bold))

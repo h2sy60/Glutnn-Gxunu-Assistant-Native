@@ -154,6 +154,7 @@ enum GXVNUService {
 
     /// 登录。captcha 为用户输入的验证码（默认不要，按服务器要求）。
     static func login(studentId: String, password: String, captcha: String) async -> LoginOutcome {
+        AppLogger.shared.log("GXVNU login attempt: captcha=\(captcha.isEmpty ? "empty" : "provided")")
         // 验证码和 csrftoken 都跟会话绑定，不要在两次尝试之间清会话。
         // build 66：用户已输验证码时，复用取图那次的 csrftoken / mmsfjm / 会话，
         // 不再先 GET 登录页——那次 GET 可能轮换 JSESSIONID，让验证码作废
@@ -264,6 +265,7 @@ enum GXVNUService {
         // 失败，先给明确提示，别让用户对着“密码加密失败”猜。
         if mmsfjm != "0", let limit = rsaPKCS1MaxPlaintextBytes(modulusBase64: modulus),
            password.utf8.count > limit {
+            AppLogger.shared.log("GXVNU login failure: password too long (\(password.utf8.count) > \(limit) bytes)")
             return .failure("密码过长，超过教务系统加密上限（\(limit) 字节），请在教务网页改短密码后再登录")
         }
         let encryptedPassword = (mmsfjm == "0") ? password : (rsaEncryptPKCS1(plaintext: password, modulusBase64: modulus, exponentBase64: exponent) ?? "")

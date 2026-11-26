@@ -53,6 +53,7 @@ enum GUTService {
 
     /// 登录。captcha 为用户输入的验证码（桂工每次都要）。
     static func login(studentId: String, password: String, captcha: String) async -> LoginOutcome {
+        AppLogger.shared.log("GUT login attempt: captcha=\(captcha.isEmpty ? "empty" : "provided")")
         guard let url = school.url("/academic/j_acegi_security_check") else {
             return .failure("地址无效")
         }
@@ -95,16 +96,18 @@ enum GUTService {
             // 跳维护页也算“登录成功”，然后刷新再失败来回折腾。这里把已知的
             // 非成功落点排除掉；saved request（currcourse.jsdo 等业务页）和
             // index_new.jsp 仍算成功，不影响 build 68 的放宽。
+            // 不用 "security"：登录接口本身就是 j_acegi_security_check，
+            // 这个词太宽，容易误伤正常落点。
             let blockedKeywords = ["maintain", "weihu", "error.jsp", "/error/", "errorpage", "systemerror",
                                    "modifypassword", "changepassword", "updatepassword", "resetpassword",
-                                   "passwordmodify", "pwdmodify", "modify_pwd", "security"]
+                                   "passwordmodify", "pwdmodify", "modify_pwd"]
             let isBlockedPage = blockedKeywords.contains { lowerLocation.contains($0) }
                 || (lowerLocation.contains("index.jsp") && !lowerLocation.contains("index_new.jsp"))
             if (response.statusCode == 301 || response.statusCode == 302),
                !location.isEmpty,
                !isLoginPage,
                !isBlockedPage {
-                AppLogger.shared.log("GUT login success")
+                AppLogger.shared.log("GUT login success, location=\(location)")
                 return .success
             }
             // 失败：顺手 GET 一次错误页（302 跳回的登录页），读具体失败原因，
