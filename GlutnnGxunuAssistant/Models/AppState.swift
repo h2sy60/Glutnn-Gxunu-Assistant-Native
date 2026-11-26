@@ -593,19 +593,36 @@ final class AppState {
     }
 
     /// 外观设置的 UserDefaults 键（学校 + 学号；没学号用 guest）。
+    /// v2 起：v1 存量在 loadScheduleAppearance 里迁移（见下）。
     private static func appearanceKey(schoolId: SchoolID, studentId: String) -> String {
+        "ScheduleAppearance_v2.\(schoolId.rawValue).\(studentId.isEmpty ? "guest" : studentId)"
+    }
+
+    private static func legacyAppearanceKey(schoolId: SchoolID, studentId: String) -> String {
         "ScheduleAppearance_v1.\(schoolId.rawValue).\(studentId.isEmpty ? "guest" : studentId)"
     }
 
     /// 读当前学校 + 学号的外观设置（没有就用默认）。
     func loadScheduleAppearance() {
         let key = Self.appearanceKey(schoolId: school.id, studentId: studentId)
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let saved = try? JSONDecoder().decode(ScheduleAppearance.self, from: data) else {
-            scheduleAppearance = .default
+        if let data = UserDefaults.standard.data(forKey: key),
+           let saved = try? JSONDecoder().decode(ScheduleAppearance.self, from: data) {
+            scheduleAppearance = saved
             return
         }
-        scheduleAppearance = saved
+        // v1 存量迁移：build 85 时 textVerticalCenter=false 没有视觉效果
+        // （frame 没写 alignment、默认居中），build 86 起才变成顶部排布。
+        // 存量里的 false 基本是当时默认值被整表存下、不是用户选的顶部，
+        // 迁移时翻回 true 恢复居中观感，其余设置原样保留并存到 v2。
+        let legacyKey = Self.legacyAppearanceKey(schoolId: school.id, studentId: studentId)
+        if let data = UserDefaults.standard.data(forKey: legacyKey),
+           var saved = try? JSONDecoder().decode(ScheduleAppearance.self, from: data) {
+            saved.textVerticalCenter = true
+            scheduleAppearance = saved
+            saveScheduleAppearance()
+            return
+        }
+        scheduleAppearance = .default
     }
 
     /// 保存当前外观设置（调完即记，下次登录就是这套）。
