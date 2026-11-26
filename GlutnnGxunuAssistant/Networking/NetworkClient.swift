@@ -216,7 +216,10 @@ final class NetworkClient: @unchecked Sendable {
     }
 
     /// POST，body 为表单编码后的 Data（调用方自己拼 body）。
-    func post(_ url: URL, body: Data?, headers: [String: String] = [:], maxRetries: Int = 0) async throws -> (Data, HTTPURLResponse) {
+    /// 默认和 GET 一样对超时/断网重试 2 次（只读查询类 POST 用）；
+    /// 登录类 POST 必须显式传 maxRetries: 0——验证码/csrftoken 是一次性的，
+    /// 超时后原样重发会把登录流程搞乱。
+    func post(_ url: URL, body: Data?, headers: [String: String] = [:], maxRetries: Int = 2) async throws -> (Data, HTTPURLResponse) {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.httpBody = body
@@ -225,7 +228,8 @@ final class NetworkClient: @unchecked Sendable {
     }
 
     /// POST，body 为表单字典（按 application/x-www-form-urlencoded 编码）。
-    func postForm(_ url: URL, form: [String: String], headers: [String: String] = [:], maxRetries: Int = 0) async throws -> (Data, HTTPURLResponse) {
+    /// 重试默认同 post（查询类重试 2 次，登录类显式传 0）。
+    func postForm(_ url: URL, form: [String: String], headers: [String: String] = [:], maxRetries: Int = 2) async throws -> (Data, HTTPURLResponse) {
         var allHeaders = headers
         allHeaders["Content-Type"] = "application/x-www-form-urlencoded"
         let formAllowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
@@ -239,7 +243,7 @@ final class NetworkClient: @unchecked Sendable {
 
     private func applyCommonHeaders(_ request: inout URLRequest, headers: [String: String]) {
         request.timeoutInterval = Self.timeout
-        if let cookie = cookies.header(for: request.url!) {
+        if let url = request.url, let cookie = cookies.header(for: url) {
             request.setValue(cookie, forHTTPHeaderField: "Cookie")
         }
         for (key, value) in headers {

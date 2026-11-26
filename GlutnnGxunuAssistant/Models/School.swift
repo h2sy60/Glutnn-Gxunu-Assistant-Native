@@ -301,6 +301,12 @@ func weekdayNumber(from text: String) -> Int? {
 /// 返回 (weeks, special)：special 为 true 表示含单/双或逗号，调用方按逐周赋值；
 /// false 表示普通区间/单周。
 func parseWeekList(_ weekInterval: String) -> (weeks: [Int], special: Bool) {
+    // 先归一化：服务端偶尔返回 "11-14, 15-17"（逗号后带空格）或全角逗号，
+    // Int(" 15") 解析失败会把后半段静默丢掉。周次串里只有数字/-/逗号/单/双，
+    // 去掉全部空白、把全角逗号换成半角最稳。
+    let weekInterval = weekInterval
+        .replacingOccurrences(of: "，", with: ",")
+        .filter { !$0.isWhitespace }
     var weekList: [Int] = []
     var specialWeek = true
 
@@ -380,11 +386,23 @@ func expandWeeks(_ parsed: (weeks: [Int], special: Bool), rawInterval: String) -
 
 // MARK: - 当前周
 
-/// 从学期开始日往后数，当前是第几周（1 起，超总周数按总周数算）。
-/// 开学日和总周数都走生效值（学期设置里可改）。
-func currentWeek(for school: SchoolConfig, on date: Date = Date()) -> Int {
+/// 开学日所在周的周一。课表网格、日历导出、提醒排期、当前周都按这个
+/// 对齐后的周一算日期，四处才一致；开学日本来就是周一时就是它自己。
+/// （用户把开学日改成非周一时，不对齐的话提醒和导出能差好几天。）
+func termStartMonday(for school: SchoolConfig) -> Date {
     let cal = Calendar(identifier: .gregorian)
     let start = cal.startOfDay(for: school.effectiveTermStartDate)
+    let wd = cal.component(.weekday, from: start)
+    let daysFromMonday = (wd + 5) % 7
+    return cal.date(byAdding: .day, value: -daysFromMonday, to: start) ?? start
+}
+
+/// 从学期开始日往后数，当前是第几周（1 起，超总周数按总周数算）。
+/// 开学日和总周数都走生效值（学期设置里可改）。
+/// 按开学周的周一对齐后数周，和课表网格/日历导出/提醒用同一套周界。
+func currentWeek(for school: SchoolConfig, on date: Date = Date()) -> Int {
+    let cal = Calendar(identifier: .gregorian)
+    let start = termStartMonday(for: school)
     let today = cal.startOfDay(for: date)
     let days = cal.dateComponents([.day], from: start, to: today).day ?? 0
     var week = days / 7 + 1

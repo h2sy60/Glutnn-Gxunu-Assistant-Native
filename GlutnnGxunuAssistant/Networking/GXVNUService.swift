@@ -48,8 +48,18 @@ enum GXVNUService {
     // MARK: - 工具
 
     /// V9.0 没有 401：业务响应是登录页 = 会话已过期。
+    /// 注意别单独用 csrftoken 判：V9 很多正常业务页的表单里也带 csrftoken
+    /// 隐藏字段，单独命中会把正常页误判成过期。只认登录页特有的标记：
+    /// 登录动作 login_slogin、标题“用户登录”、登录页开关 dlsfbxyzm、
+    /// 登录表单的 yhm+mm 字段，或服务器明说的过期文案。
     private static func isLoginPage(_ body: String) -> Bool {
-        body.contains("login_slogin") || body.contains("用户登录") || body.contains("csrftoken") || body.contains("请重新登录") || body.contains("登录超时") || body.contains("会话已过期")
+        body.contains("login_slogin")
+            || body.contains("用户登录")
+            || body.contains("dlsfbxyzm")
+            || (body.contains(#"name="yhm""#) && body.contains(#"name="mm""#))
+            || body.contains("请重新登录")
+            || body.contains("登录超时")
+            || body.contains("会话已过期")
     }
 
     private static func extract(_ html: String, pattern: String) -> String? {
@@ -250,6 +260,12 @@ enum GXVNUService {
               let exponent = keyJson["exponent"] as? String else {
             return .failure("获取公钥失败")
         }
+        // RSA PKCS#1 有明文长度上限（1024 位密钥 117 字节）：超了必然加密
+        // 失败，先给明确提示，别让用户对着“密码加密失败”猜。
+        if mmsfjm != "0", let limit = rsaPKCS1MaxPlaintextBytes(modulusBase64: modulus),
+           password.utf8.count > limit {
+            return .failure("密码过长，超过教务系统加密上限（\(limit) 字节），请在教务网页改短密码后再登录")
+        }
         let encryptedPassword = (mmsfjm == "0") ? password : (rsaEncryptPKCS1(plaintext: password, modulusBase64: modulus, exponentBase64: exponent) ?? "")
         guard !encryptedPassword.isEmpty else { return .failure("密码加密失败") }
 
@@ -272,6 +288,8 @@ enum GXVNUService {
         let responseData: Data
         let response: HTTPURLResponse
         do {
+            // 登录 POST 不重试：csrftoken/验证码跟会话绑定，超时重发会搞乱登录流程
+            // （登录自身的重试在上面的循环里按新会话重来）。
             (responseData, response) = try await client.post(
                 url,
                 body: body.data(using: .utf8),
@@ -285,7 +303,8 @@ enum GXVNUService {
                     "Sec-Fetch-Site": "same-origin",
                     "Sec-Fetch-Mode": "navigate",
                     "Sec-Fetch-Dest": "document",
-                ]
+                ],
+                maxRetries: 0
             )
         } catch let error as NetworkError {
             return .failure(error.errorDescription ?? "网络错误")
@@ -466,6 +485,20 @@ enum GXVNUService {
                     continue
                 }
                 guard let kbList = decoded["kbList"] as? [[String: Any]] else {
+                    // 没有 kbList 分两种：带 xsxx/sjkList 的是真课表响应（会话有效，
+                    // 只是这学期没课/服务端省略了 kbList），按空课表返回，别误判
+                    // 过期去重登弹验证码；什么业务字段都没有的才是 build 83 说的
+                    // 过期残响，继续按 sessionExpired 走重登+重试。
+                    if decoded["xsxx"] != nil || decoded["sjkList"] != nil {
+                        if let xsxx = decoded["xsxx"] as? [String: Any] {
+                            let xm = (xsxx["XM"] as? String) ?? (xsxx["xm"] as? String) ?? (xsxx["XSXM"] as? String)
+                            if let xm, !xm.trimmingCharacters(in: .whitespaces).isEmpty {
+                                lastStudentName = xm.trimmingCharacters(in: .whitespaces)
+                            }
+                        }
+                        AppLogger.shared.log("GXVNU schedule: no kbList but xsxx/sjkList present, treat as empty schedule")
+                        return []
+                    }
                     lastError = ScheduleError.sessionExpired; continue
                 }
                 // 姓名藏在课表响应的 xsxx.XM 里。
@@ -1186,17 +1219,31 @@ static func fetchNotifications() async throws -> [GXVNUNotification] {
     }
     let ns = html as NSString
     let linkMatches = linkRegex.matches(in: html, options: [], range: NSRange(location: 0, length: ns.length))
-    let dateMatches = dateRegex.matches(in: html, options: [], range: NSRange(location: 0, length: ns.length))
     var result: [GXVNUNotification] = []
     for (index, m) in linkMatches.enumerated() {
-        guard index < dateMatches.count else { break }
         let xwbh = ns.substring(with: m.range(at: 1))
         var title = ns.substring(with: m.range(at: 2))
         title = title.replacingOccurrences(of: "&nbsp;", with: " ")
             .replacingOccurrences(of: "&amp;", with: "&")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { continue }
-        let date = ns.substring(with: dateMatches[index].range)
+        // 日期按条目配对，不按全页下标配对：先在本条链接之后、下一条链接
+        // 之前找第一个日期（列表常见版式：标题链接后跟日期）；找不到再往
+        // 前一条链接之后、本条链接之前找最后一个（日期在标题前的版式）。
+        // 页眉页脚多出来的日期不会再把后面的标题全部错位。
+        let linkEnd = m.range.location + m.range.length
+        let nextLinkStart = index + 1 < linkMatches.count ? linkMatches[index + 1].range.location : ns.length
+        var date = ""
+        if nextLinkStart > linkEnd,
+           let dm = dateRegex.firstMatch(in: html, options: [], range: NSRange(location: linkEnd, length: nextLinkStart - linkEnd)) {
+            date = ns.substring(with: dm.range)
+        } else {
+            let prevLinkEnd = index > 0 ? linkMatches[index - 1].range.location + linkMatches[index - 1].range.length : 0
+            if m.range.location > prevLinkEnd,
+               let dm = dateRegex.matches(in: html, options: [], range: NSRange(location: prevLinkEnd, length: m.range.location - prevLinkEnd)).last {
+                date = ns.substring(with: dm.range)
+            }
+        }
         result.append(GXVNUNotification(xwbh: xwbh, title: title, date: date))
     }
     return result

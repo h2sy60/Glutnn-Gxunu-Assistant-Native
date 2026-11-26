@@ -16,6 +16,11 @@ final class AppLogger: @unchecked Sendable {
     private let lock = NSLock()
     private let ioQueue = DispatchQueue(label: "com.h2sy60.AppLogger.io", qos: .utility)
     private var lines: [String] = []
+    /// 是否已有一次落盘在队列里（合并突发写入，别每条日志都全量重写文件）。
+    private var writeScheduled = false
+    /// 清空代次：clear() 后代次 +1，之前排队的旧快照写入直接跳过，
+    /// 不会把刚清掉的日志又写回来。
+    private var generation = 0
     private let maxLines = 2000
     private let formatter: DateFormatter = {
         let f = DateFormatter()
@@ -39,14 +44,25 @@ final class AppLogger: @unchecked Sendable {
     }
 
     func log(_ message: String) {
-        let snapshot: [String] = {
-            lock.lock()
-        defer { lock.unlock() }
+        lock.lock()
         lines.append("[\(formatter.string(from: Date()))] \(message)")
         if lines.count > maxLines { lines.removeFirst(lines.count - maxLines) }
-            return lines
-        }()
-        ioQueue.async {
+        // 已有落盘在排队就不重复排：突发的一串日志合并成一次全量写，
+        // 写的时候现取最新快照，不会丢行。
+        let shouldSchedule = !writeScheduled
+        if shouldSchedule { writeScheduled = true }
+        let gen = generation
+        lock.unlock()
+        guard shouldSchedule else { return }
+        ioQueue.async { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            self.writeScheduled = false
+            let snapshot = self.lines
+            let currentGen = self.generation
+            self.lock.unlock()
+            // 排队期间被 clear() 过：这份旧快照别写了（clear 已负责删文件）。
+            guard currentGen == gen else { return }
             let text = snapshot.joined(separator: "\n") + "\n"
             try? text.write(to: Self.logFileURL, atomically: true, encoding: .utf8)
         }
@@ -67,11 +83,16 @@ final class AppLogger: @unchecked Sendable {
     }
 
     /// 清空日志（内存 + 磁盘文件一起清）。
+    /// 删文件也走 ioQueue（串行队列，和落盘写入排队执行）：之前同步删、
+    /// 异步写，排队中的旧快照可能在删除之后又把文件写回来。
     func clear() {
         lock.lock()
-        defer { lock.unlock() }
         lines.removeAll()
-        try? FileManager.default.removeItem(at: Self.logFileURL)
+        generation += 1
+        lock.unlock()
+        ioQueue.async {
+            try? FileManager.default.removeItem(at: Self.logFileURL)
+        }
     }
 }
 
@@ -1474,7 +1495,9 @@ enum ReminderManager {
 
         let cal = Calendar(identifier: .gregorian)
         let week = currentWeek(for: school)
-        let termStart = school.effectiveTermStartDate
+        // 按开学周的周一对齐（和课表网格/日历导出同一算法）：开学日不是
+        // 周一时，不对齐的话提醒日期会和课表上显示的日期差好几天。
+        let termStart = termStartMonday(for: school)
         var count = 0
         for course in courses {
             guard count < 60 else { break }
@@ -1577,6 +1600,15 @@ struct AppBackup: Codable {
     var gxvnuTermStartOverride: Double?
     var gutTotalWeeks: Int
     var gxvnuTotalWeeks: Int
+    // 以下都是可选字段：旧版备份没有这些键，解码时为 nil、导入时跳过，
+    // 不影响旧备份恢复；新版导出时带上，换手机不丢外观/作息/调课开关/壁纸图。
+    var gutAppearance: ScheduleAppearance? = nil
+    var gxvnuAppearance: ScheduleAppearance? = nil
+    var gutSectionTimes: CustomSectionTimes? = nil
+    var gxvnuSectionTimes: CustomSectionTimes? = nil
+    var showScheduleChange: Bool? = nil
+    /// 自定义壁纸图（Documents/custom-wallpaper.jpg 的内容，JSON 里是 base64）。
+    var customWallpaperImage: Data? = nil
 }
 
 extension AppState {
@@ -1613,6 +1645,21 @@ extension AppState {
         await refreshExams()
     }
 
+    /// 读某校某学号存着的课表外观（备份导出用；没存过返回 nil）。
+    private func storedAppearance(schoolId: SchoolID, account: String) -> ScheduleAppearance? {
+        let key = Self.appearanceKey(schoolId: schoolId, studentId: account)
+        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
+        return try? JSONDecoder().decode(ScheduleAppearance.self, from: data)
+    }
+
+    /// 把外观存到某校某学号名下（备份导入用）。
+    private func storeAppearance(_ appearance: ScheduleAppearance, schoolId: SchoolID, account: String) {
+        let key = Self.appearanceKey(schoolId: schoolId, studentId: account)
+        if let data = try? JSONEncoder().encode(appearance) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
     /// 导出备份到临时文件（备份与恢复）：返回文件 URL，供 ShareLink 分享。
     func exportBackup() -> URL? {
         // 课表缓存按学号存：每所学校用各自已存的学号找（当前校兜底用正在用的学号）。
@@ -1640,7 +1687,13 @@ extension AppState {
             gutTermStartOverride: AppSettings.termStartDateOverride(for: .gut)?.timeIntervalSince1970,
             gxvnuTermStartOverride: AppSettings.termStartDateOverride(for: .gxvnu)?.timeIntervalSince1970,
             gutTotalWeeks: AppSettings.totalWeeks(for: .gut),
-            gxvnuTotalWeeks: AppSettings.totalWeeks(for: .gxvnu)
+            gxvnuTotalWeeks: AppSettings.totalWeeks(for: .gxvnu),
+            gutAppearance: storedAppearance(schoolId: .gut, account: gutAccount),
+            gxvnuAppearance: storedAppearance(schoolId: .gxvnu, account: gxvnuAccount),
+            gutSectionTimes: CustomSectionTimes.load(for: .gut),
+            gxvnuSectionTimes: CustomSectionTimes.load(for: .gxvnu),
+            showScheduleChange: GUTService.showScheduleChange,
+            customWallpaperImage: hasCustomWallpaper() ? customWallpaperData() : nil
         )
         guard let data = try? JSONEncoder().encode(backup) else { return nil }
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("zhizhou-backup.json")
@@ -1667,7 +1720,16 @@ extension AppState {
         AppSettings.showRecentExams = backup.showRecentExams
         AppSettings.showTomorrowCourses = backup.showTomorrowCourses
         AppSettings.showGreeting = backup.showGreeting
-        AppSettings.wallpaper = backup.wallpaper
+        // 壁纸必须走 AppState 的 wallpaper（@Observable，didSet 同步 UserDefaults）：
+        // 只写 AppSettings.wallpaper 的话内存里还是旧值，要重启才生效。
+        wallpaper = backup.wallpaper
+        if let image = backup.customWallpaperImage {
+            saveCustomWallpaper(image)
+            customWallpaperVersion += 1
+        }
+        if let showChange = backup.showScheduleChange {
+            GUTService.showScheduleChange = showChange
+        }
         AppSettings.autoRefreshOnLaunch = backup.autoRefreshOnLaunch
         AppSettings.scoreDisplayMode = backup.scoreDisplayMode
         AppSettings.setTermStartDateOverride(
@@ -1681,6 +1743,27 @@ extension AppState {
         // 找不到学号的那所学校就不存缓存，登录后拉一次课表自然恢复。
         let gutAccount = CredentialsStore.savedStudentId(schoolId: .gut) ?? (school.id == .gut ? studentId : "")
         let gxvnuAccount = CredentialsStore.savedStudentId(schoolId: .gxvnu) ?? (school.id == .gxvnu ? studentId : "")
+        // 外观按学校 + 学号存（和课表缓存同款找学号）；备份里没有（旧备份）
+        // 就跳过，不动现在的。存完重读当前校外观，导入立刻生效。
+        if let appearance = backup.gutAppearance {
+            storeAppearance(appearance, schoolId: .gut, account: gutAccount)
+        }
+        if let appearance = backup.gxvnuAppearance {
+            storeAppearance(appearance, schoolId: .gxvnu, account: gxvnuAccount)
+        }
+        if backup.gutAppearance != nil || backup.gxvnuAppearance != nil {
+            loadScheduleAppearance()
+        }
+        // 自定义作息按学校存；备份里有才覆盖，并 bump 版本号让页面立刻重读。
+        if let times = backup.gutSectionTimes {
+            CustomSectionTimes.save(times, for: .gut)
+        }
+        if let times = backup.gxvnuSectionTimes {
+            CustomSectionTimes.save(times, for: .gxvnu)
+        }
+        if backup.gutSectionTimes != nil || backup.gxvnuSectionTimes != nil {
+            sectionTimesVersion += 1
+        }
         ScheduleStore.save(schoolId: .gut, account: gutAccount, courses: backup.gutCourses, studentName: backup.gutStudentName)
         ScheduleStore.save(schoolId: .gxvnu, account: gxvnuAccount, courses: backup.gxvnuCourses, studentName: backup.gxvnuStudentName)
         if let cached = ScheduleStore.load(schoolId: school.id, account: studentId) {

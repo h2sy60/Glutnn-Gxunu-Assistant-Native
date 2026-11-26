@@ -37,7 +37,8 @@ enum GUTService {
     static func checkCaptcha(_ code: String) async -> Bool {
         guard let url = school.url("/academic/checkCaptcha.do", query: ["captchaCode": code]) else { return false }
         do {
-            let (data, _) = try await client.postForm(url, form: ["captchaCode": code])
+            // 登录流程的一部分：不重试（验证码跟会话绑定，重发没意义）。
+            let (data, _) = try await client.postForm(url, form: ["captchaCode": code], maxRetries: 0)
             let body = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let ok = body == "true"
             AppLogger.shared.log("GUT checkCaptcha: \(ok ? "ok" : "fail")")
@@ -73,7 +74,8 @@ enum GUTService {
                 "j_password": gutPasswordHash(password),
                 "j_captcha": trimmedCaptcha,
             ]
-            let (data, response) = try await client.postForm(url, form: form)
+            // 登录 POST 不重试：验证码是一次性的，超时重发会误报验证码错误。
+            let (data, response) = try await client.postForm(url, form: form, maxRetries: 0)
             // 成功：302 跳到教务内页（Location 头）。
             // 302 不会自动跟随（NetworkClient 关了重定向），直接读头。
             // build 43：Location 用 contains 不用 ==（专家意见）——不同网关
@@ -89,9 +91,19 @@ enum GUTService {
             let location = response.value(forHTTPHeaderField: "Location") ?? ""
             let lowerLocation = location.lowercased()
             let isLoginPage = lowerLocation.contains("login") || lowerLocation.contains("affairlogin")
+            // 登录后被打到维护页/改密码页/错误页也不是成功：之前只排除登录页，
+            // 跳维护页也算“登录成功”，然后刷新再失败来回折腾。这里把已知的
+            // 非成功落点排除掉；saved request（currcourse.jsdo 等业务页）和
+            // index_new.jsp 仍算成功，不影响 build 68 的放宽。
+            let blockedKeywords = ["maintain", "weihu", "error.jsp", "/error/", "errorpage", "systemerror",
+                                   "modifypassword", "changepassword", "updatepassword", "resetpassword",
+                                   "passwordmodify", "pwdmodify", "modify_pwd", "security"]
+            let isBlockedPage = blockedKeywords.contains { lowerLocation.contains($0) }
+                || (lowerLocation.contains("index.jsp") && !lowerLocation.contains("index_new.jsp"))
             if (response.statusCode == 301 || response.statusCode == 302),
                !location.isEmpty,
-               !isLoginPage {
+               !isLoginPage,
+               !isBlockedPage {
                 AppLogger.shared.log("GUT login success")
                 return .success
             }
@@ -106,7 +118,11 @@ enum GUTService {
                 }
             }
             AppLogger.shared.log("GUT login failure, location=\(location)")
-            if errorHtml.contains("验证码错误") || errorHtml.contains("验证码不正确") {
+            if lowerLocation.contains("maintain") || lowerLocation.contains("weihu") {
+                return .failure("教务系统维护中，请稍后再试")
+            } else if ["modifypassword", "changepassword", "updatepassword", "resetpassword", "passwordmodify", "pwdmodify", "modify_pwd"].contains(where: { lowerLocation.contains($0) }) {
+                return .failure("需要先修改密码，请在教务网页处理后再登录")
+            } else if errorHtml.contains("验证码错误") || errorHtml.contains("验证码不正确") {
                 return .failure("验证码错误，请重新输入")
             } else if errorHtml.contains("密码") || errorHtml.contains("用户") || location.contains("login_error") {
                 return .failure("学号或密码错误")
@@ -398,10 +414,18 @@ enum GUTService {
         return Int(digits)
     }
 
-    /// 节次文本转 [开始, 结束]："1-2"、"第1-2节" 都行；解析失败返回 (0, 0)。
+    /// 从文本里按顺序提取全部整数（"1-2"、"1,2"、"1、2"、"第1-2节" 都行）。
+    private static func extractInts(_ text: String) -> [Int] {
+        guard let regex = try? NSRegularExpression(pattern: #"\d+"#) else { return [] }
+        let range = NSRange(text.startIndex..., in: text)
+        return regex.matches(in: text, options: [], range: range).compactMap { match in
+            Range(match.range, in: text).flatMap { Int(text[$0]) }
+        }
+    }
+
+    /// 节次文本转 [开始, 结束]："1-2"、"1,2"、"第1-2节" 都行；解析失败返回 (0, 0)。
     private static func parsePeriods(_ text: String) -> (Int, Int) {
-        let cleaned = text.replacingOccurrences(of: "[第节周单双]", with: "", options: .regularExpression)
-        let parts = cleaned.split(separator: "-").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+        let parts = extractInts(text)
         guard let first = parts.first, let last = parts.last else { return (0, 0) }
         return (first, last)
     }
@@ -500,7 +524,9 @@ enum GUTService {
                 var location = cells[3]
                 if location.isEmpty || location.contains("nbsp") { location = "未知" }
                 guard let weekday = weekdayNumber(from: weekText) else { continue }
-                let lessons = lessonInterval.split(separator: "-").compactMap { Int($0) }
+                // 节次可能是 "1-2"、"1,2"、"1 - 2"：按顺序提取整数取首尾，
+                // 只按 "-" 拆会把逗号形式整段丢掉。
+                let lessons = extractInts(lessonInterval)
                 guard !lessons.isEmpty else { continue }
                 let startSection = lessons[0]
                 let endSection = lessons.last ?? startSection
@@ -712,16 +738,33 @@ enum GUTService {
 
     /// 旧项目逻辑：考试时间形如 "2026-01-05 08:00--10:00"，取结束时间，过了即已考。
     private static func examIsPast(timeRange: String) -> Bool {
-        let parts = timeRange.split(separator: " ")
-        guard parts.count >= 2 else { return false }
-        let datePart = String(parts[0])
-        let times = parts[1].split(separator: "--")
-        guard times.count >= 2 else { return false }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
-        formatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        guard let endTime = formatter.date(from: "\(datePart) \(times[1])") else { return false }
+        // 考试时间格式不统一："2026-01-05 08:00--10:00"、单横线、波浪线、
+        // 斜杠日期、只有开始时间都可能出现。按正则提取日期和全部时刻，
+        // 取最后一个时刻为结束时间（只有一个就用它），过了即已考；
+        // 提取不到日期或时刻就当待考。
+        guard let dateRegex = try? NSRegularExpression(pattern: #"(\d{4})[-/](\d{1,2})[-/](\d{1,2})"#),
+              let timeRegex = try? NSRegularExpression(pattern: #"(\d{1,2}):(\d{2})"#) else { return false }
+        let range = NSRange(timeRange.startIndex..., in: timeRange)
+        guard let dm = dateRegex.firstMatch(in: timeRange, options: [], range: range),
+              dm.numberOfRanges >= 4,
+              let yR = Range(dm.range(at: 1), in: timeRange),
+              let moR = Range(dm.range(at: 2), in: timeRange),
+              let dR = Range(dm.range(at: 3), in: timeRange),
+              let year = Int(timeRange[yR]), let month = Int(timeRange[moR]), let day = Int(timeRange[dR]) else { return false }
+        let timeMatches = timeRegex.matches(in: timeRange, options: [], range: range)
+        guard let last = timeMatches.last, last.numberOfRanges >= 3,
+              let hR = Range(last.range(at: 1), in: timeRange),
+              let miR = Range(last.range(at: 2), in: timeRange),
+              let hour = Int(timeRange[hR]), let minute = Int(timeRange[miR]) else { return false }
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        var comps = DateComponents()
+        comps.year = year
+        comps.month = month
+        comps.day = day
+        comps.hour = hour
+        comps.minute = minute
+        guard let endTime = cal.date(from: comps) else { return false }
         return Date() > endTime
     }
 
@@ -741,6 +784,9 @@ enum GUTService {
         } catch let error as NetworkError {
             throw ScheduleError.network(error.errorDescription ?? "网络错误")
         }
+        // 先按状态码判会话过期（302 空正文），再解码——和课表/成绩/考试同款，
+        // 否则空正文先触发 parseError，自动重登永远触发不了。
+        try throwIfSessionExpired(response: listResponse)
         guard let listHTML = decodeGUTHTML(listData, response: listResponse), !listHTML.isEmpty else {
             throw ScheduleError.parseError
         }
@@ -763,6 +809,7 @@ enum GUTService {
         } catch let error as NetworkError {
             throw ScheduleError.network(error.errorDescription ?? "网络错误")
         }
+        try throwIfSessionExpired(response: planResponse)
         guard let planHTML = decodeGUTHTML(planData, response: planResponse), !planHTML.isEmpty else {
             throw ScheduleError.parseError
         }
@@ -907,6 +954,8 @@ enum GUTService {
         } catch let error as NetworkError {
             throw ScheduleError.network(error.errorDescription ?? "网络错误")
         }
+        // 先按状态码判会话过期（302 空正文），再解码（和课表/成绩/考试同款）。
+        try throwIfSessionExpired(response: response)
         guard let html = decodeGUTHTML(data, response: response), !html.isEmpty else {
             throw ScheduleError.parseError
         }
@@ -959,6 +1008,8 @@ enum GUTService {
         } catch let error as NetworkError {
             throw ScheduleError.network(error.errorDescription ?? "网络错误")
         }
+        // 先按状态码判会话过期（302 空正文），再解码（和课表/成绩/考试同款）。
+        try throwIfSessionExpired(response: response)
         guard let html = decodeGUTHTML(data, response: response), !html.isEmpty else {
             throw ScheduleError.parseError
         }
@@ -1040,6 +1091,9 @@ enum GUTService {
         }
         do {
             let (data, response) = try await client.get(url)
+            // 302 空正文 = 会话过期（和课表/成绩/考试同款预判）：姓名是尽力而为，
+            // 直接返回 nil，不拿空正文去解码误判。
+            if response.statusCode == 301 || response.statusCode == 302 { return nil }
             guard let html = decodeGUTHTML(data, response: response), !html.isEmpty else { return nil }
             if isGUTSessionExpired(response: response, html: html) { return nil }
             return parseStudentNameHTML(html)

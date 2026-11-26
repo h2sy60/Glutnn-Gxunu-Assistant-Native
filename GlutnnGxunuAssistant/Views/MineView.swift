@@ -1805,10 +1805,12 @@ struct GXVNUCareerView: View {
             let fetched: GXVNUCareerCache? = try await appState.performWithAutoRelogin {
                 let ids = try await GXVNUService.resolveAcademicIDs()
             let plans = try await GXVNUService.fetchTeachingPlan(ids: ids)
-            let myPlan = plans.first { $0.majorName == ids.major }
+            // 只认本专业计划：匹配不到就返回 nil 走“未找到本专业教学计划”，
+            // 绝不拿第一个（别的专业）顶替，会把别的专业的课程数算到自己头上。
+            // ids.major 为空时 contains("") 恒真，也要先挡掉。
+            let myPlan = ids.major.isEmpty ? nil : (plans.first { $0.majorName == ids.major }
                 ?? plans.first { !$0.majorName.isEmpty && ids.major.contains($0.majorName) }
-                ?? plans.first { !$0.majorName.isEmpty && $0.majorName.contains(ids.major) }
-                ?? plans.first
+                ?? plans.first { !$0.majorName.isEmpty && $0.majorName.contains(ids.major) })
             guard let plan = myPlan else { return nil }
                 var totalCount = plan.courseCount
                 let parsedGrade = Int(ids.grade) ?? 0
@@ -1830,12 +1832,19 @@ struct GXVNUCareerView: View {
                 let selected = try await GXVNUService.fetchSelectedCourses()
                 // 通过情况（成绩 >= 60 合格）。
                 let scores = try await GXVNUService.fetchScores(year: nil, term: nil)
+                // 通过情况按课程去重：重修过的课成绩里会出现多次，
+                // 按每门课的最好成绩算一次通过/未通过，别重复计数。
+                var bestByCourse: [String: Double] = [:]
+                for s in scores {
+                    let key = s.courseCode.isEmpty ? s.courseName : s.courseCode
+                    bestByCourse[key] = max(bestByCourse[key] ?? -1, s.score)
+                }
                 return GXVNUCareerCache(
                     totalCourseCount: totalCount,
                     majorCourseCount: majorCount,
-                    passCount: scores.filter { $0.score >= 60 }.count,
-                    failCount: scores.filter { $0.score < 60 }.count,
-                    inProgressCount: selected.count,
+                    passCount: bestByCourse.values.filter { $0 >= 60 }.count,
+                    failCount: bestByCourse.values.filter { $0 < 60 }.count,
+                    inProgressCount: Set(selected.map { $0.courseCode.isEmpty ? $0.courseName : $0.courseCode }).count,
                     grade: parsedGrade,
                     schoolingLength: length
                 )
@@ -2605,10 +2614,12 @@ struct GXVNUGraduationView: View {
                 return (ids, plans)
             }
             // 本专业计划：专业名与个人信息里的专业一致（与教学计划页同款匹配）。
-            let myPlan = plans.first { $0.majorName == ids.major }
+            // 匹配不到就走“未找到本专业教学计划”，绝不拿第一个（别的专业）
+            // 顶替，会把别的专业的学分要求算到自己头上；ids.major 为空时
+            // contains("") 恒真，也要先挡掉。
+            let myPlan = ids.major.isEmpty ? nil : (plans.first { $0.majorName == ids.major }
                 ?? plans.first { !$0.majorName.isEmpty && ids.major.contains($0.majorName) }
-                ?? plans.first { !$0.majorName.isEmpty && $0.majorName.contains(ids.major) }
-                ?? plans.first
+                ?? plans.first { !$0.majorName.isEmpty && $0.majorName.contains(ids.major) })
             guard let plan = myPlan else {
                 errorMessage = "未找到本专业教学计划"
                 return
@@ -2623,22 +2634,32 @@ struct GXVNUGraduationView: View {
                     requiredByCategory[c.category, default: 0] += c.credit
                 }
             }
-            // 在修（已选课程）。
-            let selected = try await appState.performWithAutoRelogin { try await GXVNUService.fetchSelectedCourses() }
-            inProgressCredits = selected.reduce(0) { $0 + $1.credit }
-            var inProgressByCategory: [String: Double] = [:]
-            for c in selected {
-                inProgressByCategory[c.category, default: 0] += c.credit
-            }
-            // 已修得（成绩，score >= 60 计为通过）。
+            // 已修得（成绩，score >= 60 计为通过）。重修过的课成绩里会出现
+            // 多次，学分只能算一次：按课程代码（没有就用课程名）去重。
             let scores = try await appState.performWithAutoRelogin { try await GXVNUService.fetchScores(year: nil, term: nil) }
             var earnedByCategory: [String: Double] = [:]
             var earned: Double = 0
+            var earnedKeys = Set<String>()
             for s in scores where s.score >= 60 {
+                let key = s.courseCode.isEmpty ? s.courseName : s.courseCode
+                guard earnedKeys.insert(key).inserted else { continue }
                 earned += s.credit
                 earnedByCategory[s.courseCategory, default: 0] += s.credit
             }
             earnedCredits = earned
+            // 在修（已选课程）。已经通过又重修刷分的课别在已修得和在修里
+            // 各算一次；已选里同一门课重复出现也只算一次。
+            let selected = try await appState.performWithAutoRelogin { try await GXVNUService.fetchSelectedCourses() }
+            var inProgressByCategory: [String: Double] = [:]
+            var inProgress: Double = 0
+            var inProgressKeys = Set<String>()
+            for c in selected {
+                let key = c.courseCode.isEmpty ? c.courseName : c.courseCode
+                guard !earnedKeys.contains(key), inProgressKeys.insert(key).inserted else { continue }
+                inProgress += c.credit
+                inProgressByCategory[c.category, default: 0] += c.credit
+            }
+            inProgressCredits = inProgress
             // 合并所有性质，按要求学分从大到小排。
             let allCategories = Set(requiredByCategory.keys)
                 .union(inProgressByCategory.keys)

@@ -78,6 +78,25 @@ private func rsaPublicKeyDER(modulus: Data, exponent: Data) -> Data {
     return DER.sequence(algorithm + DER.bitString(rsaKey))
 }
 
+/// 模数的真实位长：先去掉前导零字节，再按最高字节的有效位数算。
+/// 直接用 modulus.count * 8 会在模数带前导零（129 字节）时算成 1032 位，
+/// 和 DER 里真正的 1024 位对不上，建钥匙会失败或行为异常。
+private func rsaModulusBitLength(_ modulus: Data) -> Int {
+    var bytes = [UInt8](modulus)
+    while bytes.count > 1 && bytes[0] == 0x00 { bytes.removeFirst() }
+    guard let first = bytes.first, first != 0 else { return 1024 }
+    return (bytes.count - 1) * 8 + (8 - first.leadingZeroBitCount)
+}
+
+/// RSA PKCS#1 v1.5 能加密的最大明文字节数（密钥字节数 − 11，
+/// 1024 位密钥就是 117）。密码超了 SecKey 加密必然失败，
+/// 调用方先查一下，能给用户明确提示而不是笼统的“密码加密失败”。
+func rsaPKCS1MaxPlaintextBytes(modulusBase64: String) -> Int? {
+    guard let modulus = Data(base64Encoded: modulusBase64) else { return nil }
+    let keyBytes = (rsaModulusBitLength(modulus) + 7) / 8
+    return max(keyBytes - 11, 0)
+}
+
 /// 从 Base64 的 modulus/exponent 建 SecKey（1024 位 RSA 公钥）。
 private func secKey(modulusBase64: String, exponentBase64: String) -> SecKey? {
     guard let modulus = Data(base64Encoded: modulusBase64),
@@ -88,7 +107,7 @@ private func secKey(modulusBase64: String, exponentBase64: String) -> SecKey? {
     let attributes: [String: Any] = [
         kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
         kSecAttrKeyClass as String: kSecAttrKeyClassPublic,
-        kSecAttrKeySizeInBits as String: max(modulus.count * 8, 1024),
+        kSecAttrKeySizeInBits as String: rsaModulusBitLength(modulus),
     ]
     var error: Unmanaged<CFError>?
     guard let key = SecKeyCreateWithData(der as CFData, attributes as CFDictionary, &error) else {
