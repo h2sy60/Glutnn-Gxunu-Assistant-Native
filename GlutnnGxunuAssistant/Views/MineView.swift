@@ -9,6 +9,9 @@ struct MineView: View {
     @Environment(AppState.self) private var appState
     @State private var showLogoutConfirm = false
     @State private var showSwitchAccountConfirm = false
+    /// 日志导出版本号：ShareLink 的 item 在 body 求值时生成，清空日志不改
+    /// 任何状态的话分享的还是清空前的旧快照；清空时 +1 触发重绘重新求值。
+    @State private var logExportVersion = 0
     
     /// 玻璃卡片容器。
     private func glassCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
@@ -197,6 +200,7 @@ struct MineView: View {
                                     Button("清空") {
                                         AppLogger.shared.clear()
                                         AppLogger.shared.log("log cleared by user")
+                                        logExportVersion += 1
                                     }
                                     .font(.caption)
                                     .foregroundStyle(.white.opacity(0.6))
@@ -305,6 +309,11 @@ struct ScheduleDataView: View {
                             return
                         }
                             guard isLoaded else { return }
+                            // .task 填初始值也会触发这里（isLoaded 那时已置 true）：
+                            // 值和当前生效值同一天就不是用户改的，别把默认日期
+                            // 写成“用户覆盖”（下学期默认变了会被旧覆盖坑）。
+                            let cal = Calendar(identifier: .gregorian)
+                            guard !cal.isDate(newValue, inSameDayAs: appState.school.effectiveTermStartDate) else { return }
                             AppSettings.setTermStartDateOverride(newValue, for: appState.school.id)
                             hasTermOverride = true
                             appState.refreshCurrentWeek()
@@ -312,6 +321,7 @@ struct ScheduleDataView: View {
                     Stepper("学期周数：\(totalWeeks) 周", value: $totalWeeks, in: 1...30)
                         .onChange(of: totalWeeks) { _, newValue in
                             guard isLoaded else { return }
+                            guard newValue != appState.school.effectiveTotalWeeks else { return }
                             AppSettings.setTotalWeeks(newValue, for: appState.school.id)
                             appState.refreshCurrentWeek()
                         }
@@ -409,11 +419,13 @@ struct ReminderSettingsView: View {
                             Task {
                                 if enabled {
                                     let granted = await ReminderManager.requestPermission()
-                                    if granted {
+                                    // 等权限弹窗期间用户可能已经关了开关：
+                                    // 回来先复查，还开着才排，别把提醒注册上去。
+                                    if granted && classReminderEnabled {
                                         await ReminderManager.rescheduleClassReminders(
                                             courses: appState.courses, school: appState.school,
                                             leadMinutes: classReminderMinutes)
-                                    } else {
+                                    } else if !granted {
                                         permissionDenied = true
                                         classReminderEnabled = false
                                     }
@@ -454,11 +466,13 @@ struct ReminderSettingsView: View {
                             Task {
                                 if enabled {
                                     let granted = await ReminderManager.requestPermission()
-                                    if granted {
+                                    // 等权限弹窗期间用户可能已经关了开关：
+                                    // 回来先复查，还开着才排，别把提醒注册上去。
+                                    if granted && examReminderEnabled {
                                         await ReminderManager.rescheduleExamReminders(
                                             exams: appState.exams,
                                             leadDays: examReminderDays)
-                                    } else {
+                                    } else if !granted {
                                         permissionDenied = true
                                         examReminderEnabled = false
                                     }
@@ -751,6 +765,12 @@ struct TimeManageView: View {
                         let cal = Calendar(identifier: .gregorian)
                         let start = startDates.map { [cal.component(.hour, from: $0), cal.component(.minute, from: $0)] }
                         let end = endDates.map { [cal.component(.hour, from: $0), cal.component(.minute, from: $0)] }
+                        // 每节结束必须晚于开始：存反了课表网格/日历导出会算出
+                        // 负时长，先拦下来提示改哪一节。
+                        if let bad = start.indices.first(where: { start[$0][0] * 60 + start[$0][1] >= end[$0][0] * 60 + end[$0][1] }) {
+                            notice = "第 \(bad + 1) 节结束时间需晚于开始时间，未保存"
+                            return
+                        }
                         CustomSectionTimes.save(CustomSectionTimes(start: start, end: end), for: school.id)
                         notice = "已保存"
                         // 作息版本号 +1：课表页和首页重读文件，立刻显示新时间

@@ -1,4 +1,6 @@
 import Foundation
+import ImageIO
+import UniformTypeIdentifiers
 
 // MARK: - 学校配置
 
@@ -583,8 +585,28 @@ var customWallpaperURL: URL {
 }
 
 /// 存自定义壁纸（相册选图后调）。存失败静默忽略，调用方读不到就退回默认壁纸。
+/// 存前降采样到最长边 1600px 并转 JPEG：相册原图（尤其 48MP）直接存，
+/// 显示时全尺寸解码的位图近 200MB，老设备容易被系统杀；壁纸只需要屏幕分辨率。
 func saveCustomWallpaper(_ data: Data) {
-    try? data.write(to: customWallpaperURL)
+    try? downsampledWallpaperData(data).write(to: customWallpaperURL)
+}
+
+/// 用 ImageIO 直接按目标尺寸解码缩略图（不先全尺寸解码再缩，省内存峰值），
+/// 转 JPEG 返回。解不了的格式原样返回，调用方照常存。
+private func downsampledWallpaperData(_ data: Data, maxPixelSize: Int = 1600) -> Data {
+    guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return data }
+    let options: [CFString: Any] = [
+        kCGImageSourceCreateThumbnailFromImageAlways: true,
+        kCGImageSourceCreateThumbnailWithTransform: true,
+        kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+        kCGImageSourceShouldCacheImmediately: true,
+    ]
+    guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return data }
+    let out = NSMutableData()
+    guard let dest = CGImageDestinationCreateWithData(out, UTType.jpeg.identifier as CFString, 1, nil) else { return data }
+    CGImageDestinationAddImage(dest, image, [kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary)
+    guard CGImageDestinationFinalize(dest) else { return data }
+    return out as Data
 }
 
 /// 读自定义壁纸。没存过返回 nil。

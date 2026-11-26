@@ -925,7 +925,8 @@ enum GXVNUService {
         guard let url = school.url("/xsxxxggl/xsxxwh_cxXsxkxx.html", query: ["gnmkdm": gnmkdm]) else {
             throw ScheduleError.network("选课信息接口地址无效")
         }
-        var form = gridForm(showCount: "100")
+        // showCount 拉全量：100 门上限会被静默截断（在修学分算少），放 500。
+        var form = gridForm(showCount: "500")
         form["xh_id"] = ""
         form["xnm"] = ""
         form["xqm"] = ""
@@ -980,14 +981,28 @@ enum GXVNUService {
                   let m = regex.firstMatch(in: plain, range: NSRange(plain.startIndex..., in: plain)),
                   m.numberOfRanges >= 2,
                   let r = Range(m.range(at: 1), in: plain) else { return "" }
-            let val = String(plain[r]); return val.contains("：") ? "" : val
+            // 空字段时正则会越过空白抓到下一个标签：抓到的值带冒号
+            // （全角/半角都算）说明是把下个标签吞了，按空处理。
+            let val = String(plain[r]); return (val.contains("：") || val.contains(":")) ? "" : val
         }
-        let majorRaw = field("专业名称")  // 如“工程造价（普专本）(0509)”
+        // 专业字段单独放宽：去标签时标签间会插入空格，专业名和代码
+        // "(0509)" 若不在同一文本节点，中间就有空格，只取第一个 token
+        // 会把代码截掉。允许名字后面跟一个可选的 (数字) 代码。
+        let majorRaw: String = {
+            let pattern = "专业名称：\\s*([^\\s]+(?:\\s*\\(\\d+\\))?)"
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let m = regex.firstMatch(in: plain, range: NSRange(plain.startIndex..., in: plain)),
+                  m.numberOfRanges >= 2,
+                  let r = Range(m.range(at: 1), in: plain) else { return "" }
+            let val = String(plain[r])
+            return (val.contains("：") || val.contains(":")) ? "" : val
+        }()  // 如“工程造价（普专本）(0509)”
         var majorCode = ""
         if let m = majorRaw.range(of: "\\((\\d+)\\)", options: .regularExpression) {
             majorCode = String(majorRaw[m]).trimmingCharacters(in: CharacterSet(charactersIn: "()"))
         }
         let majorName = majorRaw.replacingOccurrences(of: "\\(\\d+\\)", with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
         return GXVNUProfile(
             grade: field("年级"),
             college: field("学院名称"),
@@ -1018,13 +1033,21 @@ enum GXVNUService {
         }
         let infoHTML = String(data: infoData, encoding: .utf8) ?? ""
         if isLoginPage(infoHTML) { throw ScheduleError.sessionExpired }
-        guard let xhId = extract(infoHTML, pattern: #"photo_cxXszp4\.html\?xh_id=(\d+)"#),
+        guard let xhId = extract(infoHTML, pattern: #"photo_cxXszp4\.html\?xh_id=([A-Za-z0-9]+)"#),
               let photoURL = school.url("/xtgl/photo_cxXszp4.html", query: ["xh_id": xhId, "zplx": "rxqzp"]) else {
             throw ScheduleError.parseError
         }
         let (photoData, photoResponse) = try await client.get(photoURL, headers: browserHeaders)
+        // 第二次请求也要认掉登录：302 或返回登录页 HTML 时抛 sessionExpired
+        // 让自动重登接管，别把 HTML 当照片数据返回（或误报网络错误）。
+        if photoResponse.statusCode == 301 || photoResponse.statusCode == 302 {
+            throw ScheduleError.sessionExpired
+        }
         guard photoResponse.statusCode == 200, !photoData.isEmpty else {
             throw ScheduleError.network("照片接口返回异常")
+        }
+        if let text = String(data: photoData, encoding: .utf8), isLoginPage(text) {
+            throw ScheduleError.sessionExpired
         }
         return photoData
     }
@@ -1172,7 +1195,8 @@ static func fetchPlanCourses(planId: String) async throws -> [GXVNUPlanCourse] {
     guard let url = school.url("/jxzxjhgl/jxzxjhkcxx_cxJxzxjhkcxxIndex.html", query: ["doType": "query", "gnmkdm": gnmkdm]) else {
         throw ScheduleError.network("计划课程接口地址无效")
     }
-    var form = gridForm(showCount: "100")
+    // 四年培养计划课程常超 100 门：showCount 放 500，别把应修学分截少。
+    var form = gridForm(showCount: "500")
     form["jxzxjhxx_id"] = planId
     let items = try await postGrid(url: url, form: form)
     return items.compactMap { item in
@@ -1326,7 +1350,9 @@ static func fetchTrainingPlanPDF() async throws -> Data {
     if let text = String(data: pdfData, encoding: .utf8), isLoginPage(text) {
         throw ScheduleError.sessionExpired
     }
-    guard pdfData.count > 100 else {
+    // 校验 PDF 文件头：服务端返回错误 HTML 页时也可能有几百字节，
+    // 只看长度会把 HTML 当 PDF 传给 PDFKit 打开一片空白。
+    guard pdfData.count > 100, pdfData.prefix(5) == Data("%PDF-".utf8) else {
         throw ScheduleError.parseError
     }
     return pdfData

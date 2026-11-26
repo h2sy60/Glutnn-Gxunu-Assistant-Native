@@ -742,6 +742,9 @@ final class AppState {
     @ObservationIgnored private var isRefreshingSchedule = false
     /// 刷新成绩防重入（build 43）。
     @ObservationIgnored private var isRefreshingScores = false
+    /// 成绩刷新代次：切学年/学期时新请求顶掉旧请求，旧结果回来直接丢弃，
+    /// 不覆盖新筛选的结果（防重入直接吞掉新请求的话，页面会停在旧学期）。
+    @ObservationIgnored private var scoresRefreshGeneration = 0
 
     init() {
         updateTermFromDate()
@@ -1010,6 +1013,8 @@ final class AppState {
             if message.contains("验证码") {
                 showToast(.error, message, duration: 4)
                 await fetchCaptcha()
+                // 换了新图就把旧输入清掉，免得用户对着新图还留着旧码。
+                captchaDialogText = ""
             } else {
                 showCaptchaDialog = false
                 isLoggedIn = false
@@ -1023,6 +1028,7 @@ final class AppState {
             AppLogger.shared.log("reverify \(school.id) captchaRequired: new image fetched")
             showToast(.error, "请输入验证码", duration: 2)
             await fetchCaptcha()
+            captchaDialogText = ""
         }
     }
 
@@ -1324,14 +1330,18 @@ final class AppState {
     /// 拉成绩（全部学年学期）。会话过期时自动重登一次再试。
     func refreshScores(year filterYear: Int? = nil, term filterTerm: String? = nil) async {
         guard isLoggedIn else { return }
-        // 防重入（build 43）：正在刷新时再点直接忽略。
-        guard !isRefreshingScores else { return }
+        // 代次顶替：新请求（比如快速切学年/学期）直接顶掉在跑的旧请求，
+        // 旧结果回来按代次丢弃。原来防重入把新请求吞掉，页面会停在旧筛选。
+        scoresRefreshGeneration += 1
+        let generation = scoresRefreshGeneration
         isRefreshingScores = true
         scoresLoading = true
         scoresError = nil
         defer {
-            scoresLoading = false
-            isRefreshingScores = false
+            if generation == scoresRefreshGeneration {
+                scoresLoading = false
+                isRefreshingScores = false
+            }
         }
 
         do {
@@ -1343,14 +1353,18 @@ final class AppState {
                 return try await GXVNUService.fetchScores(year: filterYear, term: filterTerm)
             }
         }
-            guard school.id == currentSchoolId else { return }
+            guard school.id == currentSchoolId, generation == scoresRefreshGeneration else { return }
         scores = list
-            if filterYear == nil && filterTerm == nil {
+            // 空结果不写缓存（和课表防冲刷同款）：服务端异常返回空时，
+            // 别把本地存好的成绩覆盖成空。
+            if filterYear == nil && filterTerm == nil && !list.isEmpty {
         ModuleDiskCache.save(scores, schoolId: school.id, account: studentId, key: "scores")
             }
         AppLogger.shared.log("scores \(school.id) ok, \(list.count) items")
         if list.isEmpty { scoresError = "暂无成绩" }
     } catch let error as ScheduleError {
+        // 被新请求顶掉的旧请求报错不写页面（新请求还在跑/已回来）。
+        guard generation == scoresRefreshGeneration else { return }
         if case .sessionExpired = error {
             AppLogger.shared.log("scores \(school.id) session expired")
             scoresError = "登录已过期，请重新登录"
@@ -1358,6 +1372,7 @@ final class AppState {
             scoresError = error.errorDescription
         }
     } catch {
+        guard generation == scoresRefreshGeneration else { return }
         scoresError = (error as? LocalizedError)?.errorDescription ?? "拉取成绩失败"
         }
     }
@@ -1383,13 +1398,18 @@ final class AppState {
                 return try await GXVNUService.fetchExams(year: currentYear, semester: currentSemester)
             }
         }
-            guard school.id == currentSchoolId else { return }
+            // 学校/学年/学期在请求期间变了就丢弃，别把旧学期考试写进新页面。
+            guard school.id == currentSchoolId, year == currentYear, semester == currentSemester else { return }
             exams = list
-            ModuleDiskCache.save(exams, schoolId: school.id, account: studentId, key: "exams")
+            // 空结果不写缓存、不重排提醒（和课表防冲刷同款）：服务端异常
+            // 返回空时，别把存好的考试和已排的考试提醒一起清掉。
+            if !list.isEmpty {
+                ModuleDiskCache.save(exams, schoolId: school.id, account: studentId, key: "exams")
+            }
             AppLogger.shared.log("exams \(school.id) ok, \(list.count) items")
             if list.isEmpty { examsError = "暂无考试安排" }
             // build 63：考试拉成功后，考试提醒开了就重排。
-            if AppSettings.examReminderEnabled {
+            if AppSettings.examReminderEnabled && !list.isEmpty {
                 let exams = list
                 Task {
                     await ReminderManager.rescheduleExamReminders(
@@ -1498,14 +1518,16 @@ enum ReminderManager {
         // 按开学周的周一对齐（和课表网格/日历导出同一算法）：开学日不是
         // 周一时，不对齐的话提醒日期会和课表上显示的日期差好几天。
         let termStart = termStartMonday(for: school)
+        // iOS 待发通知上限 64 条（超了系统静默丢弃）：上课提醒最多占 54 条，
+        // 给考试提醒留 10 条，两边加起来不超限。
         var count = 0
         for course in courses {
-            guard count < 60 else { break }
+            guard count < 54 else { break }
             guard (1...7).contains(course.weekday),
                   course.startSection >= 1,
                   course.startSection <= school.effectiveStartTimeList.count else { continue }
             for w in course.weeks where w >= week && w <= week + 1 {
-                guard count < 60 else { break }
+                guard count < 54 else { break }
                 guard let day = cal.date(byAdding: .day, value: (w - 1) * 7 + (course.weekday - 1), to: termStart),
                       let start = cal.date(
                           bySettingHour: school.effectiveStartTimeList[course.startSection - 1].0,
@@ -1536,21 +1558,52 @@ enum ReminderManager {
         center.removePendingNotificationRequests(withIdentifiers: ids)
     }
 
+    /// 从考试时间串里提取开始时刻：日期（yyyy-MM-dd 或 yyyy/MM/dd）+ 第一个
+    /// HH:mm。两校格式不统一（"2026-01-05 08:00--10:00"、单横线、斜杠日期
+    /// 都见过），按正则提取比固定取前 16 位稳；提取不到返回 nil。
+    private static func examStartDate(_ timeRange: String) -> Date? {
+        guard let dateRegex = try? NSRegularExpression(pattern: #"(\d{4})[-/](\d{1,2})[-/](\d{1,2})"#),
+              let timeRegex = try? NSRegularExpression(pattern: #"(\d{1,2}):(\d{2})"#) else { return nil }
+        let range = NSRange(timeRange.startIndex..., in: timeRange)
+        guard let dm = dateRegex.firstMatch(in: timeRange, options: [], range: range),
+              dm.numberOfRanges >= 4,
+              let yR = Range(dm.range(at: 1), in: timeRange),
+              let moR = Range(dm.range(at: 2), in: timeRange),
+              let dR = Range(dm.range(at: 3), in: timeRange),
+              let year = Int(timeRange[yR]), let month = Int(timeRange[moR]), let day = Int(timeRange[dR]),
+              let tm = timeRegex.firstMatch(in: timeRange, options: [], range: range),
+              tm.numberOfRanges >= 3,
+              let hR = Range(tm.range(at: 1), in: timeRange),
+              let miR = Range(tm.range(at: 2), in: timeRange),
+              let hour = Int(timeRange[hR]), let minute = Int(timeRange[miR]) else { return nil }
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        var comps = DateComponents()
+        comps.year = year
+        comps.month = month
+        comps.day = day
+        comps.hour = hour
+        comps.minute = minute
+        return cal.date(from: comps)
+    }
+
     /// 按待考重排考试提醒：每场考试提前 leadDays 天（考试开始 − leadDays×24h）提醒。
-    /// 时间串取前 16 位按 "yyyy-MM-dd HH:mm" 解析，解析失败的跳过；已过的提醒跳过。
+    /// 解析失败/已过的跳过。最多排 10 条（按考试时间从近到远）：
+    /// iOS 待发通知总上限 64 条，上课提醒占 54，这里留 10，不超限被系统丢。
     static func rescheduleExamReminders(exams: [ExamItem], leadDays: Int) async {
         let center = UNUserNotificationCenter.current()
         let pending = await center.pendingNotificationRequests()
         let oldIds = pending.map(\.identifier).filter { $0.hasPrefix(examPrefix) }
         center.removePendingNotificationRequests(withIdentifiers: oldIds)
 
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        // 先把能解析出开始时间的待考按时间排序，近的优先占名额。
+        let upcoming: [(exam: ExamItem, start: Date)] = exams
+            .filter { !$0.isPast }
+            .compactMap { exam in examStartDate(exam.time).map { (exam, $0) } }
+            .sorted { $0.start < $1.start }
         var count = 0
-        for exam in exams where !exam.isPast {
-            let prefix = String(exam.time.prefix(16))
-            guard let start = formatter.date(from: prefix) else { continue }
+        for (exam, start) in upcoming {
+            guard count < 10 else { break }
             let fire = start.addingTimeInterval(TimeInterval(-leadDays * 24 * 3600))
             guard fire > Date() else { continue }
             let content = UNMutableNotificationContent()
@@ -1764,8 +1817,14 @@ extension AppState {
         if backup.gutSectionTimes != nil || backup.gxvnuSectionTimes != nil {
             sectionTimesVersion += 1
         }
-        ScheduleStore.save(schoolId: .gut, account: gutAccount, courses: backup.gutCourses, studentName: backup.gutStudentName)
-        ScheduleStore.save(schoolId: .gxvnu, account: gxvnuAccount, courses: backup.gxvnuCourses, studentName: backup.gxvnuStudentName)
+        // 备份里没课表的那所学校（导出时没缓存）别写盘：无条件 save 会把
+        // 本机另一所学校已有的缓存抹成空。空数组 = 备份没带这校数据，跳过。
+        if !backup.gutCourses.isEmpty {
+            ScheduleStore.save(schoolId: .gut, account: gutAccount, courses: backup.gutCourses, studentName: backup.gutStudentName)
+        }
+        if !backup.gxvnuCourses.isEmpty {
+            ScheduleStore.save(schoolId: .gxvnu, account: gxvnuAccount, courses: backup.gxvnuCourses, studentName: backup.gxvnuStudentName)
+        }
         if let cached = ScheduleStore.load(schoolId: school.id, account: studentId) {
             courses = cached.courses
             studentName = cached.studentName
