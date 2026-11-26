@@ -245,7 +245,7 @@
 				"$(inherited)",
 				"@executable_path/Frameworks",
 			);
-			MARKETING_VERSION = 1.1.3;
+			MARKETING_VERSION = 1.1.4;
 			PRODUCT_BUNDLE_IDENTIFIER = com.h2sy60.GlutnnGxunuAssistant;
 			PRODUCT_NAME = "$(TARGET_NAME)";
 			SWIFT_EMBED_LIBRARIES_WITH_INSTALL = YES;
@@ -270,7 +270,7 @@
 				"$(inherited)",
 				"@executable_path/Frameworks",
 			);
-			MARKETING_VERSION = 1.1.3;
+			MARKETING_VERSION = 1.1.4;
 			PRODUCT_BUNDLE_IDENTIFIER = com.h2sy60.GlutnnGxunuAssistant;
 			PRODUCT_NAME = "$(TARGET_NAME)";
 			SWIFT_EMBED_LIBRARIES_WITH_INSTALL = YES;
