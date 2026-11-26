@@ -226,7 +226,7 @@ enum GUTService {
         // 拿不到 id 或调课接口失败都静默跳过，不影响原课表显示。
         if showScheduleChange, let scheduleId = extractScheduleId(from: html) {
             let cal = Calendar(identifier: .gregorian)
-            let termStarted = cal.startOfDay(for: Date()) >= cal.startOfDay(for: school.termStartDate)
+            let termStarted = cal.startOfDay(for: Date()) >= cal.startOfDay(for: school.effectiveTermStartDate)
             if termStarted {
                 let changes = await fetchScheduleChanges(id: scheduleId, year: year, semester: semester)
                 if !changes.isEmpty {

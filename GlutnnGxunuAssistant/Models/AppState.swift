@@ -108,6 +108,19 @@ enum CredentialsStore {
         return (studentId, password)
     }
 
+    /// 某所学校已存的学号（只读学号，不要求密码存在；备份导出/导入按学号找课表缓存用）。
+    static func savedStudentId(schoolId: SchoolID) -> String? {
+        guard let studentId = UserDefaults.standard.string(forKey: studentIdKey(schoolId)),
+              !studentId.isEmpty else { return nil }
+        return studentId
+    }
+
+    /// 只记“上次用的学校”（切学校时调）：不动任何一所学校的已存账号。
+    /// 不能用 save() 代替——save 会顺带把该校账号密码一起写，参数不对就写脏。
+    static func setLastSchoolId(_ schoolId: SchoolID) {
+        UserDefaults.standard.set(schoolId.rawValue, forKey: schoolKey)
+    }
+
     /// 上次登录的学校（启动恢复用）。
     static func lastSchoolId() -> SchoolID? {
         guard let raw = UserDefaults.standard.string(forKey: schoolKey) else { return nil }
@@ -138,15 +151,19 @@ enum CredentialsStore {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
-        SecItemDelete(query as CFDictionary)
-        var addQuery = query
-        addQuery[kSecValueData as String] = data
-        let status = SecItemAdd(addQuery as CFDictionary, nil)
-        if status == errSecDuplicateItem {
-            let attributesToUpdate: [String: Any] = [
-                kSecValueData as String: data,
-            ]
-            SecItemUpdate(query as CFDictionary, attributesToUpdate as CFDictionary)
+        // 先 Update、没有再 Add（和 CookieJar 同款）：绝不先 Delete——删完
+        // Add 失败（比如钥匙串暂时不可用）就把已存密码弄丢了。
+        // 可访问性跟 CookieJar 对齐：首次解锁后可读、本机专用（不进 iCloud 钥匙串）。
+        let attributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
+        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if status == errSecItemNotFound {
+            var addQuery = query
+            addQuery[kSecValueData as String] = data
+            addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            SecItemAdd(addQuery as CFDictionary, nil)
         }
     }
 
@@ -179,36 +196,66 @@ enum CredentialsStore {
 //
 // 旧版 Flutter 启动就读本地课表文件（readSchedule），不用登录也能看首页。
 // 原生版之前课表只在内存里，退出就没了，首页只能是一片空。
-// 现在每次拉课表成功就写一份 JSON 到沙盒（按学校分文件），启动和切学校时读出来。
-// 退出登录时清掉缓存，换账号不会看到上一个人的课。
+// 现在每次拉课表成功就写一份 JSON 到沙盒（按学校 + 学号分文件，与成绩/
+// 考试的 ModuleDiskCache 同款），启动和切学校时按当前学号读出来。
+// 只按学校存会串账号：换账号后拉取失败时，首页会显示上一个人的课。
+// 退出登录时清掉当前账号的缓存。
 enum ScheduleStore {
     private struct SavedSchedule: Codable {
         var courses: [Course]
         var studentName: String
     }
 
-    private static func fileURL(schoolId: SchoolID) -> URL {
+    private static func fileURL(schoolId: SchoolID, account: String) -> URL {
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let safeAccount = account.replacingOccurrences(of: "/", with: "_")
+        return dir.appendingPathComponent("schedule_\(schoolId.rawValue)_\(safeAccount).json")
+    }
+
+    /// 旧版只按学校存的文件（无学号归属，无法确认是谁的课表，不再读取）。
+    private static func legacyFileURL(schoolId: SchoolID) -> URL {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return dir.appendingPathComponent("schedule_\(schoolId.rawValue).json")
     }
 
-    /// 拉课表成功后调：把课表 + 名字写进磁盘。
-    static func save(schoolId: SchoolID, courses: [Course], studentName: String) {
+    /// 拉课表成功后调：把课表 + 名字写进磁盘（学号为空不写，避免存成无主缓存）。
+    static func save(schoolId: SchoolID, account: String, courses: [Course], studentName: String) {
+        guard !account.isEmpty else { return }
         let payload = SavedSchedule(courses: courses, studentName: studentName)
         guard let data = try? JSONEncoder().encode(payload) else { return }
-        try? data.write(to: fileURL(schoolId: schoolId), options: .atomic)
+        try? data.write(to: fileURL(schoolId: schoolId, account: account), options: .atomic)
+        // 顺手清掉旧版无学号文件，防止它被误读或长期残留。
+        try? FileManager.default.removeItem(at: legacyFileURL(schoolId: schoolId))
     }
 
-    /// 启动 / 切学校时调：读出缓存（没有返回 nil）。
-    static func load(schoolId: SchoolID) -> (courses: [Course], studentName: String)? {
-        guard let data = try? Data(contentsOf: fileURL(schoolId: schoolId)),
+    /// 启动 / 切学校时调：按学号读出缓存（没有或学号为空返回 nil）。
+    /// 不回退读旧版无学号文件——无法确认归属，读了就会串账号；
+    /// 升级后第一次启动没有缓存，拉一次课表就恢复。
+    static func load(schoolId: SchoolID, account: String) -> (courses: [Course], studentName: String)? {
+        guard !account.isEmpty,
+              let data = try? Data(contentsOf: fileURL(schoolId: schoolId, account: account)),
               let payload = try? JSONDecoder().decode(SavedSchedule.self, from: data) else { return nil }
         return (payload.courses, payload.studentName)
     }
 
-    /// 退出登录时调：清掉该校缓存。
-    static func clear(schoolId: SchoolID) {
-        try? FileManager.default.removeItem(at: fileURL(schoolId: schoolId))
+    /// 退出登录时调：清掉该校该账号的缓存（含旧版无学号文件）。
+    static func clear(schoolId: SchoolID, account: String) {
+        if !account.isEmpty {
+            try? FileManager.default.removeItem(at: fileURL(schoolId: schoolId, account: account))
+        }
+        try? FileManager.default.removeItem(at: legacyFileURL(schoolId: schoolId))
+    }
+
+    /// 清除全部缓存（数据管理）时调：清掉该校所有账号的课表缓存文件。
+    static func clearAll(schoolId: SchoolID) {
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let prefix = "schedule_\(schoolId.rawValue)_"
+        if let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
+            for url in files where url.lastPathComponent.hasPrefix(prefix) {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+        try? FileManager.default.removeItem(at: legacyFileURL(schoolId: schoolId))
     }
 }
 
@@ -662,6 +709,14 @@ final class AppState {
     /// “账号密码不正确”——明明密码没错，只是两次登录把会话搞脏了。
     /// 所有登录入口（login / 静默重登）都走这个单飞合并。
     @ObservationIgnored private var activeLoginTask: Task<LoginOutcome, Never>?
+    /// 正在跑的登录任务的标识（学校+学号+验证码+密码）：只有标识相同的
+    /// 调用才能复用它的结果；验证码不同的调用要排队等它跑完再用自己的
+    /// 验证码登一次，不能直接拿空验证码登录的失败结果（那会让用户刚在
+    /// 验证码弹窗里输的验证码被吞掉，反复弹“请输验证码”）。
+    @ObservationIgnored private var activeLoginKey: String?
+    /// 当前登录任务的序号：清理 activeLoginTask 时先核对，避免把后来
+    /// 排队新建的任务误清掉。
+    @ObservationIgnored private var activeLoginToken: UUID?
     /// 刷新课表防重入（build 43）：正在刷新时再点刷新直接忽略。
     @ObservationIgnored private var isRefreshingSchedule = false
     /// 刷新成绩防重入（build 43）。
@@ -682,7 +737,8 @@ final class AppState {
             isLoggedIn = true
         }
         // 读本地课表缓存（旧版 readSchedule）：不登录也能看首页。
-        if let cached = ScheduleStore.load(schoolId: school.id) {
+        // 按已存学号读（studentId 刚从已存账号恢复），没存账号就不读，避免串账号。
+        if let cached = ScheduleStore.load(schoolId: school.id, account: studentId) {
             courses = cached.courses
             if !cached.studentName.isEmpty { studentName = cached.studentName }
         }
@@ -736,6 +792,9 @@ final class AppState {
         if !studentId.isEmpty {
             CredentialsStore.save(schoolId: school.id, studentId: studentId, password: password)
         }
+        // 记下“上次用的学校”是新学校：save() 刚把 lastSchoolId 写成了旧学校，
+        // 不覆盖的话，下次启动还会回到旧学校，切学校等于白切。
+        CredentialsStore.setLastSchoolId(newSchool.id)
         // 禁用隐式动画，在同一帧内原子化切换整套上下文。
         var transaction = Transaction(animation: nil)
         transaction.disablesAnimations = true
@@ -752,7 +811,8 @@ final class AppState {
             isLoggedIn = false
             studentName = ""
             // 读目标学校的缓存课表（没有就空着，等登录后拉）。不直接清空：旧版切学校后首页照样显示该校缓存。
-            if let cached = ScheduleStore.load(schoolId: newSchool.id) {
+            // 按刚恢复的目标校学号读，没存账号就不读，避免看到别人存下的课表。
+            if let cached = ScheduleStore.load(schoolId: newSchool.id, account: studentId) {
                 courses = cached.courses
                 if !cached.studentName.isEmpty { studentName = cached.studentName }
             } else {
@@ -949,14 +1009,24 @@ final class AppState {
     /// 它的结果，绝不返回 nil 误报过期（build 43，专家意见）。
     /// 两个登录并发会把会话顶掉（Cookie/CSRFT 串掉），表现就是“账号密码不正确”。
     /// 账号/学校在创建 Task 前先取好，避免登录中途切学校读到错的上下文。
+    ///
+    /// 只有学校/学号/验证码/密码都相同的调用才复用结果；验证码不同的
+    /// 调用（比如静默空验证码登录在跑时，用户在弹窗里输了验证码）排队
+    /// 等前一个跑完，再用自己的验证码登一次——绝不并发，也不把用户刚
+    /// 输的验证码吞掉、直接返回前一个登录的失败结果。
     private func performLogin(captcha: String) async -> LoginOutcome {
-        if let existingTask = activeLoginTask {
-            return await existingTask.value
-        }
         let currentSchool = school
         let currentStudentId = studentId
         let currentPassword = password
+        let key = "\(currentSchool.id.rawValue)|\(currentStudentId)|\(captcha)|\(currentPassword)"
+        if let existingTask = activeLoginTask, activeLoginKey == key {
+            return await existingTask.value
+        }
+        // 排队：新任务先等前一个登录跑完，再发起自己的登录。
+        let previousTask = activeLoginTask
+        let token = UUID()
         let task = Task<LoginOutcome, Never> {
+            if let previousTask { _ = await previousTask.value }
             if currentSchool.id == .gut {
                 return await GUTService.login(studentId: currentStudentId, password: currentPassword, captcha: captcha)
             } else {
@@ -964,8 +1034,15 @@ final class AppState {
             }
         }
         activeLoginTask = task
+        activeLoginKey = key
+        activeLoginToken = token
         let outcome = await task.value
-        activeLoginTask = nil
+        // 只清自己这一个任务，别把排队新建的任务误清掉。
+        if activeLoginToken == token {
+            activeLoginTask = nil
+            activeLoginKey = nil
+            activeLoginToken = nil
+        }
         return outcome
     }
 
@@ -1085,8 +1162,8 @@ final class AppState {
         password = ""
         studentName = ""
         courses = []
-        // 退出登录清掉该校课表缓存，换账号不会看到上一个人的课。
-        ScheduleStore.clear(schoolId: school.id)
+        // 退出登录清掉该校该账号的课表缓存，换账号不会看到上一个人的课。
+        ScheduleStore.clear(schoolId: school.id, account: oldStudentId)
         scores = []
         scoresError = nil
         exams = []
@@ -1161,7 +1238,7 @@ final class AppState {
             // build 43：缓存防冲刷（专家意见）——只有拉到的课表非空才写缓存；
             // 解析失败/拦截页返回空数组时，绝不能把本地原本存好的课表覆盖成空。
             if !list.isEmpty {
-                ScheduleStore.save(schoolId: school.id, courses: list, studentName: studentName)
+                ScheduleStore.save(schoolId: school.id, account: studentId, courses: list, studentName: studentName)
             }
             if list.isEmpty { scheduleError = "本周没有课程" }
             // build 63：拉课表成功后的联动——日历自动同步 + 上课提醒重排。
@@ -1506,8 +1583,8 @@ extension AppState {
     /// 清除全部缓存（数据管理）：两校课表缓存文件 + 内存里的课表/成绩/考试。
     /// 不清账号密码（Russell 永久纠正：账号密码他自己删）。
     func clearAllCachedData() {
-        ScheduleStore.clear(schoolId: .gut)
-        ScheduleStore.clear(schoolId: .gxvnu)
+        ScheduleStore.clearAll(schoolId: .gut)
+        ScheduleStore.clearAll(schoolId: .gxvnu)
         let moduleKeys = ["scores", "exams", "gxvnu_career"]
         if !studentId.isEmpty {
             for key in moduleKeys {
@@ -1538,8 +1615,11 @@ extension AppState {
 
     /// 导出备份到临时文件（备份与恢复）：返回文件 URL，供 ShareLink 分享。
     func exportBackup() -> URL? {
-        let gut = ScheduleStore.load(schoolId: .gut)
-        let gxvnu = ScheduleStore.load(schoolId: .gxvnu)
+        // 课表缓存按学号存：每所学校用各自已存的学号找（当前校兜底用正在用的学号）。
+        let gutAccount = CredentialsStore.savedStudentId(schoolId: .gut) ?? (school.id == .gut ? studentId : "")
+        let gxvnuAccount = CredentialsStore.savedStudentId(schoolId: .gxvnu) ?? (school.id == .gxvnu ? studentId : "")
+        let gut = ScheduleStore.load(schoolId: .gut, account: gutAccount)
+        let gxvnu = ScheduleStore.load(schoolId: .gxvnu, account: gxvnuAccount)
         let backup = AppBackup(
             autoCalendarSync: AppSettings.autoCalendarSync,
             calendarSyncRange: AppSettings.calendarSyncRange,
@@ -1597,9 +1677,13 @@ extension AppState {
         AppSettings.setTotalWeeks(backup.gutTotalWeeks, for: .gut)
         AppSettings.setTotalWeeks(backup.gxvnuTotalWeeks, for: .gxvnu)
         updateTermFromDate()
-        ScheduleStore.save(schoolId: .gut, courses: backup.gutCourses, studentName: backup.gutStudentName)
-        ScheduleStore.save(schoolId: .gxvnu, courses: backup.gxvnuCourses, studentName: backup.gxvnuStudentName)
-        if let cached = ScheduleStore.load(schoolId: school.id) {
+        // 备份里不带学号：按每所学校已存的学号存（当前校兜底用正在用的学号），
+        // 找不到学号的那所学校就不存缓存，登录后拉一次课表自然恢复。
+        let gutAccount = CredentialsStore.savedStudentId(schoolId: .gut) ?? (school.id == .gut ? studentId : "")
+        let gxvnuAccount = CredentialsStore.savedStudentId(schoolId: .gxvnu) ?? (school.id == .gxvnu ? studentId : "")
+        ScheduleStore.save(schoolId: .gut, account: gutAccount, courses: backup.gutCourses, studentName: backup.gutStudentName)
+        ScheduleStore.save(schoolId: .gxvnu, account: gxvnuAccount, courses: backup.gxvnuCourses, studentName: backup.gxvnuStudentName)
+        if let cached = ScheduleStore.load(schoolId: school.id, account: studentId) {
             courses = cached.courses
             studentName = cached.studentName
         }

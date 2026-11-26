@@ -109,18 +109,20 @@ struct HomeView: View {
     }
 
     /// 学期行（原版 glassSemesterLine 同款公式与文案）：
-    /// 进度 = 周×5% − 5% + 星期/7×5%，取整；提示按周数分段。
+    /// 进度 =（周−1 + 星期/7）/ 总周数，取整；提示按进度比例分段。
+    /// 总周数走学期设置（默认 20），不再写死 20 周 / 每周 5%。
     private var semesterLine: String {
         let week = appState.currentWeek
-        if week > 20 { return "学期已经结束咯" }
+        let totalWeeks = max(appState.school.effectiveTotalWeeks, 1)
+        if week > totalWeeks { return "学期已经结束咯" }
         if week <= 0 { return "新学期即将到来" }
         let weekday = Double(todayWeekday)
-        let progress = (Double(week) * 5 / 100) - 0.05 + (weekday / 7 * 5 / 100)
+        let progress = (Double(week - 1) + weekday / 7) / Double(totalWeeks)
         let percent = Int(progress * 100)
         let tip: String
-        if week >= 15 { tip = "期末来临，复习为重" }
-        else if week >= 10 { tip = "学期过半，珍惜当下" }
-        else if week >= 5 { tip = "已过小半，集中精力" }
+        if progress >= 0.75 { tip = "期末来临，复习为重" }
+        else if progress >= 0.5 { tip = "学期过半，珍惜当下" }
+        else if progress >= 0.25 { tip = "已过小半，集中精力" }
         else { tip = "开学不久，好好玩吧" }
         return "本学期第 \(week) 周 · \(tip) · 已完成 \(percent)%"
     }

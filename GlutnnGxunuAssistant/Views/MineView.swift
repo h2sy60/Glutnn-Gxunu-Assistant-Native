@@ -1431,7 +1431,7 @@ struct GUTClassroomQueryView: View {
     @State private var errorMessage: String? = nil
     @State private var hasQueried = false
 
-    private var weekOptions: [Int] { Array(1...20) }
+    private var weekOptions: [Int] { Array(1...max(appState.school.effectiveTotalWeeks, 1)) }
     private var dayNames: [String] { ["周一", "周二", "周三", "周四", "周五", "周六", "周日"] }
 
     var body: some View {
@@ -1514,7 +1514,7 @@ struct GUTClassroomQueryView: View {
         .navigationBarTitleDisplayMode(.inline)
         .task {
             // 默认本周、本星期（旧项目：周次取当前周，星期取今天）。
-            selectedWeek = min(max(appState.currentWeek, 1), 20)
+            selectedWeek = min(max(appState.currentWeek, 1), max(appState.school.effectiveTotalWeeks, 1))
             let swiftWeekday = Calendar.current.component(.weekday, from: Date())
             selectedDay = swiftWeekday == 1 ? 7 : swiftWeekday - 1
             await loadBuildings()

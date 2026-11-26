@@ -106,9 +106,12 @@ struct ScheduleView: View {
     /// 点中的课程块（start/end 是合并后的节次范围），非空时弹课程详情。
     @State private var selectedBlock: (start: Int, end: Int, course: Course)?
 
+    /// 学期总周数（学期设置里可改，默认 20）。分页范围跟它走，不再写死 20。
+    private var totalWeeks: Int { max(appState.school.effectiveTotalWeeks, 1) }
+
     private var week: Int {
         let raw = displayWeek == 0 ? appState.currentWeek : displayWeek
-        return min(max(raw, 1), 20) // 严格钳在 1...20，防止 UIPageViewController 越界（build 42）
+        return min(max(raw, 1), totalWeeks) // 严格钳在 1...总周数，防止 UIPageViewController 越界（build 42）
     }
     private var isCurrentWeek: Bool { week == appState.currentWeek }
 
@@ -272,7 +275,7 @@ struct ScheduleView: View {
                         get: { week },
                         set: { displayWeek = $0 }
                     )) {
-                        ForEach(1...20, id: \.self) { w in
+                        ForEach(1...totalWeeks, id: \.self) { w in
                             let list = courses(for: w)
                             // 单一 ZStack 包裹 if/else，只在最外层打唯一一个 .tag(w)：
                             // 原先两个分支各打 .tag(w)，换校时某周从“有课”变“无课”，
@@ -338,13 +341,13 @@ struct ScheduleView: View {
         .onAppear {
             appState.refreshCurrentWeek()
             if !hasInitializedWeek {
-                displayWeek = min(max(appState.currentWeek, 1), 20)
+                displayWeek = min(max(appState.currentWeek, 1), totalWeeks)
                 hasInitializedWeek = true
             }
         }
         // 换校时 displayWeek 跟着新学校的当前周走（配合 TabView 的 .id 重建，build 42）。
         .onChange(of: appState.school.id) { _, _ in
-            displayWeek = min(max(appState.currentWeek, 1), 20)
+            displayWeek = min(max(appState.currentWeek, 1), totalWeeks)
         }
         .fullScreenCover(isPresented: $showExportPage) {
             ScheduleExportView()
@@ -878,7 +881,7 @@ struct CalendarExporter {
               course.endSection >= course.startSection, course.endSection <= school.sectionCount
         else { return nil }
         // 日期 = 开学周一 + (week-1)*7 天 + (weekday-1) 天。
-        let termStartDay = cal.startOfDay(for: school.termStartDate)
+        let termStartDay = cal.startOfDay(for: school.effectiveTermStartDate)
         let wd = cal.component(.weekday, from: termStartDay)
         let daysFromMonday = (wd + 5) % 7
         guard let alignedMonday = cal.date(byAdding: .day, value: -daysFromMonday, to: termStartDay),
@@ -1065,7 +1068,7 @@ struct ScheduleExportView: View {
     /// 开学日期（yyyy-MM-dd）。
     private var termStartText: String {
         let c = Calendar(identifier: .gregorian)
-        let d = appState.school.termStartDate
+        let d = appState.school.effectiveTermStartDate
         return "\(c.component(.year, from: d))-\(String(format: "%02d", c.component(.month, from: d)))-\(String(format: "%02d", c.component(.day, from: d)))"
     }
 
