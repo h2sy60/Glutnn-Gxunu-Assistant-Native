@@ -385,7 +385,7 @@ struct ScheduleAppearance: Codable, Equatable {
     var textColorHex: String
     /// 文字不透明度（0.3...1.0）：调“深浅”。默认 0.75。
     var textOpacity: Double
-    /// 课名字号（11...16）。默认 13。
+    /// 课名字号（11...16）。默认 12。
     var fontSize: Double
     /// 格子内显示开始时间。默认 true。
     var showStartTime: Bool
@@ -476,7 +476,7 @@ struct ScheduleAppearance: Codable, Equatable {
     static let `default` = ScheduleAppearance(
         textColorHex: "#000000",
         textOpacity: 0.75,
-        fontSize: 13,
+        fontSize: 12,
         showStartTime: true,
         showLocation: true,
         showAtSign: true,
@@ -801,6 +801,10 @@ final class AppState {
     /// 323「玻璃随下方内容自动适配、由浅入深」；TabView 是 UITabBarController 的
     /// 包装，底栏外观由 UITabBar 管理（见 Apple 文档与社区验证）。
     var selectedTab = 0
+
+    /// 底栏“课表”被重复点按的计数：ContentView 的 selection setter 发现
+    /// 新旧值都是课表页时 +1，ScheduleView 监听到就回当前周。
+    var scheduleRetapCount = 0
 
     /// 是否弹出登录页（全屏，可关闭；旧版登录页就是 push 进来、右上角有关闭钮的页面，不是门禁）。
     /// 首页三个胶囊和“请先登录”在未登录时把它置 true；登录成功后 LoginView 自己关掉。

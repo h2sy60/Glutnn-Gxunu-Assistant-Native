@@ -382,6 +382,10 @@ struct ScheduleView: View {
         .onChange(of: appState.school.id) { _, _ in
             displayWeek = min(max(appState.currentWeek, 1), totalWeeks)
         }
+        // 底栏“课表”重复点按（ContentView 记的数）：不在当前周就滑回去。
+        .onChange(of: appState.scheduleRetapCount) { _, _ in
+            backToCurrentWeek()
+        }
         .fullScreenCover(isPresented: $showExportPage) {
             ScheduleExportView()
         }

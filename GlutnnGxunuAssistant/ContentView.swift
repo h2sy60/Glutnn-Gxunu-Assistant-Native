@@ -12,7 +12,14 @@ struct ContentView: View {
     /// Tab 选中态存在 AppState（不是本地 @State），因为 App 入口的窗口级
     /// .preferredColorScheme 要读它——系统底栏（UITabBar）只跟窗口走。
     private var selectedTab: Binding<Int> {
-        Binding(get: { appState.selectedTab }, set: { appState.selectedTab = $0 })
+        Binding(get: { appState.selectedTab }, set: { new in
+            // 已在课表页时再点底栏“课表”：selection 值不变，setter 仍会被
+            // TabView 以同值调用一次——记一笔，ScheduleView 回当前周。
+            if new == appState.selectedTab, new == 1 {
+                appState.scheduleRetapCount += 1
+            }
+            appState.selectedTab = new
+        })
     }
 
     var body: some View {

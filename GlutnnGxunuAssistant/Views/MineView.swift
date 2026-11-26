@@ -194,9 +194,19 @@ struct MineView: View {
                             // 没日志时写明原因，不再是空文本）。
                             glassCard {
                                 HStack {
-                                    ShareLink("导出日志", item: AppLogger.shared.exportText())
-                                        .foregroundStyle(.white)
-                                    Spacer()
+                                    // 整个胶囊（除“清空”钮外）都是导出热区，不再只有四个字能点。
+                                    ShareLink(item: AppLogger.shared.exportText()) {
+                                        HStack {
+                                            Text("导出日志")
+                                            Spacer()
+                                            Text("遇到问题时导出日志，方便定位。")
+                                                .font(.caption)
+                                                .foregroundStyle(.white.opacity(0.6))
+                                        }
+                                        .frame(maxWidth: .infinity)
+                                        .contentShape(Rectangle())
+                                    }
+                                    .foregroundStyle(.white)
                                     Button("清空") {
                                         AppLogger.shared.clear()
                                         AppLogger.shared.log("log cleared by user")
@@ -204,9 +214,6 @@ struct MineView: View {
                                     }
                                     .font(.caption)
                                     .foregroundStyle(.white.opacity(0.6))
-                                    Text("遇到问题时导出日志，方便定位。")
-                                        .font(.caption)
-                                        .foregroundStyle(.white.opacity(0.6))
                                 }
                             }
 
