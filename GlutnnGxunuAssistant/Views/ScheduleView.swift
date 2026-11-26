@@ -100,9 +100,17 @@ import EventKit // 导出到日历（EventKit）：建日历、写课程事件�
 
 struct ScheduleView: View {
     @Environment(AppState.self) private var appState
+    @Environment(\.colorScheme) private var colorScheme
     @State private var displayWeek: Int = 0
     @State private var hasInitializedWeek = false
     @State private var showExportPage = false
+    /// 课表背景图缓存（开了背景图才解码，壁纸版本变了重解）。
+    @State private var scheduleBgImage: UIImage?
+
+    /// 生效外观：开了“跟随系统深色”且系统深色时用深色配色版。
+    private var effectiveAppearance: ScheduleAppearance {
+        appState.scheduleAppearance.resolved(darkMode: colorScheme == .dark)
+    }
     /// 点中的课程块（start/end 是合并后的节次范围），非空时弹课程详情。
     @State private var selectedBlock: (start: Int, end: Int, course: Course)?
 
@@ -125,10 +133,12 @@ struct ScheduleView: View {
     /// 比名字哈希稳定——哈希会撞色（build 57 前 8 色 13 门课必有重复）。
     /// 从全部课程算（不是当周），换周颜色不变；换学校自动重算。
     private var courseColorMap: [String: Color] {
+        let palette = paletteColors(theme: effectiveAppearance.paletteTheme)
         let names = Array(Set(appState.courses.map(\.name))).sorted()
         var map: [String: Color] = [:]
         for (i, name) in names.enumerated() {
-            map[name] = coursePalette[i % coursePalette.count]
+            // 用户给这门课选过颜色就用选的，没选过按色盘顺序分。
+            map[name] = effectiveAppearance.courseColors[name].map { Color(hex: $0) } ?? palette[i % palette.count]
         }
         return map
     }
@@ -193,7 +203,7 @@ struct ScheduleView: View {
                     Text("第\(week)周\(isCurrentWeek ? " 周\(todayWeekdayChar)" : "(非本周)")")
                         .font(.system(size: 20, weight: .bold))
                         // build 57：表头颜色跟设置走。
-                        .foregroundStyle(appState.scheduleAppearance.headerColor)
+                        .foregroundStyle(effectiveAppearance.headerColor)
                 }
                 Spacer()
                 HStack(spacing: 4) {
@@ -239,7 +249,7 @@ struct ScheduleView: View {
 
             // 周 strip（原版 _Header）：星期字 + 下面显示日期号，当天黑色 pill。
             // build 80：日期号从学期开学日算（effectiveTermStartDate 已含用户覆盖）。
-            WeekDateStrip(week: week, isCurrentWeek: isCurrentWeek, visibleWeekdays: visibleWeekdays, headerColor: appState.scheduleAppearance.headerColor, termStartDate: appState.school.effectiveTermStartDate)
+            WeekDateStrip(week: week, isCurrentWeek: isCurrentWeek, visibleWeekdays: visibleWeekdays, headerColor: effectiveAppearance.headerColor, termStartDate: appState.school.effectiveTermStartDate)
                 .padding(.horizontal, 8)
                 .padding(.top, 4)
                 .padding(.bottom, 10)
@@ -248,7 +258,7 @@ struct ScheduleView: View {
         // 绝不被子视图撑高；白底向上延伸铺满状态栏安全区，挡住滑上去的课表。
         // build 57：顶栏背景色跟设置走（开纯色背景就用背景颜色，否则白底）。
         .fixedSize(horizontal: false, vertical: true)
-        .background(appState.scheduleAppearance.effectiveBackgroundColor, ignoresSafeAreaEdges: .top)
+        .background(effectiveAppearance.effectiveBackgroundColor, ignoresSafeAreaEdges: .top)
     }
 
     var body: some View {
@@ -304,9 +314,10 @@ struct ScheduleView: View {
                                         courses: list,
                                         allCourses: appState.courses,
                                         currentWeek: w,
+                                        actualCurrentWeek: appState.currentWeek,
                                         school: appState.school,
                                         rowHeight: rowHeightValue,
-                                        appearance: appState.scheduleAppearance,
+                                        appearance: effectiveAppearance,
                                         colorMap: courseColorMap,
                                         visibleWeekdays: visibleWeekdays,
                                         onSelect: { start, end, course in
@@ -332,10 +343,32 @@ struct ScheduleView: View {
             headerView
         }
         // build 57：背景色跟设置走（开纯色背景就用背景颜色，否则白底）。
-        .background(appState.scheduleAppearance.effectiveBackgroundColor)
-        // 课表是白底黑字的亮色页：整页用亮色模式，导出/日期玻璃药丸才是
+        // 开了背景图时在背景色上叠一层壁纸图（不透明度可调，图没解出来先纯色）。
+        .background {
+            ZStack {
+                effectiveAppearance.effectiveBackgroundColor
+                if effectiveAppearance.useBackgroundImage, let bg = scheduleBgImage {
+                    Image(uiImage: bg)
+                        .resizable()
+                        .scaledToFill()
+                        .opacity(effectiveAppearance.backgroundImageOpacity)
+                        .clipped()
+                }
+            }
+            .ignoresSafeArea()
+        }
+        // 课表默认是白底黑字的亮色页：整页用亮色模式，导出/日期玻璃药丸才是
         // 原版那种浅色玻璃；整 App 强制深色模式会让它俩变成深灰玻璃，丑。
-        .preferredColorScheme(.light)
+        // 开了“跟随系统深色”才放开，系统深色时整页切深色配色。
+        .preferredColorScheme(appState.scheduleAppearance.followSystemDarkMode ? nil : .light)
+        // 背景图异步解码（壁纸换了重解；没开背景图就不解，省内存）。
+        .task(id: "\(effectiveAppearance.useBackgroundImage)-\(appState.customWallpaperVersion)") {
+            guard effectiveAppearance.useBackgroundImage else { scheduleBgImage = nil; return }
+            let decoded = await Task.detached(priority: .userInitiated) {
+                (customWallpaperData() ?? wallpaperImageData()).flatMap { UIImage(data: $0) }
+            }.value
+            if !Task.isCancelled { scheduleBgImage = decoded }
+        }
         // build 85：进课表页先重算当前周（App 在后台跨了周，currentWeek 还是
         // 旧值；2026-11-23 周一仍显示第 11 周），再把 displayWeek 指过去。
         .onAppear {
@@ -360,7 +393,15 @@ struct ScheduleView: View {
                     startSection: block.start,
                     endSection: block.end,
                     school: appState.school,
-                    blockColor: courseColorMap[block.course.name] ?? courseColor(for: block.course.name),
+                    blockColor: courseColorMap[block.course.name] ?? courseColor(for: block.course.name, theme: effectiveAppearance.paletteTheme),
+                    hasCustomColor: appState.scheduleAppearance.courseColors[block.course.name] != nil,
+                    onColorChange: { hex in
+                        var a = appState.scheduleAppearance
+                        if let hex { a.courseColors[block.course.name] = hex } else { a.courseColors.removeValue(forKey: block.course.name) }
+                        appState.scheduleAppearance = a
+                        appState.saveScheduleAppearance()
+                    },
+                    isDark: appState.scheduleAppearance.followSystemDarkMode && colorScheme == .dark,
                     onDismiss: { selectedBlock = nil }
                 )
             }
@@ -433,16 +474,16 @@ struct WeekDateStrip: View {
                 VStack(spacing: 1) {
                     Text(weekdayChars[i])
                         .font(.system(size: 13))
-                        .foregroundStyle(today ? .white : headerColor.opacity(0.6))
+                        .foregroundStyle(today ? Color(uiColor: .systemBackground) : headerColor.opacity(0.6))
                     Text("\(dayNumber(for: weekday))")
                         .font(.system(size: 11))
-                        .foregroundStyle(today ? .white : headerColor.opacity(0.45))
+                        .foregroundStyle(today ? Color(uiColor: .systemBackground) : headerColor.opacity(0.45))
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 4)
                 .background(
                     today
-                        ? Color.black.opacity(0.85)
+                        ? headerColor.opacity(0.85)
                         : Color.clear,
                     in: RoundedRectangle(cornerRadius: 10)
                 )
@@ -479,11 +520,82 @@ private let coursePalette: [Color] = [
     Color(red: 0.93, green: 0.82, blue: 0.90), // 浅藕紫
 ]
 
+/// 莫兰迪色盘（低饱和灰调，16 色）。
+private let morandiPalette: [Color] = [
+    Color(red: 0.85, green: 0.72, blue: 0.70), // 灰粉
+    Color(red: 0.68, green: 0.76, blue: 0.72), // 灰绿
+    Color(red: 0.66, green: 0.73, blue: 0.82), // 灰蓝
+    Color(red: 0.86, green: 0.80, blue: 0.70), // 沙色
+    Color(red: 0.78, green: 0.70, blue: 0.78), // 灰紫
+    Color(red: 0.72, green: 0.76, blue: 0.62), // 橄榄灰
+    Color(red: 0.82, green: 0.68, blue: 0.60), // 陶土灰
+    Color(red: 0.62, green: 0.70, blue: 0.76), // 钢蓝灰
+    Color(red: 0.84, green: 0.78, blue: 0.72), // 米灰
+    Color(red: 0.62, green: 0.76, blue: 0.74), // 灰青
+    Color(red: 0.76, green: 0.66, blue: 0.74), // 梅子灰
+    Color(red: 0.80, green: 0.78, blue: 0.62), // 卡其
+    Color(red: 0.80, green: 0.64, blue: 0.62), // 砖灰
+    Color(red: 0.66, green: 0.72, blue: 0.84), // 雾蓝
+    Color(red: 0.80, green: 0.74, blue: 0.82), // 薰衣草灰
+    Color(red: 0.70, green: 0.78, blue: 0.66), // 苔绿
+]
+
+/// 高饱和色盘（鲜艳但仍够浅，黑字可读，16 色）。
+private let vividPalette: [Color] = [
+    Color(red: 1.00, green: 0.62, blue: 0.62), // 珊瑚红
+    Color(red: 0.45, green: 0.75, blue: 1.00), // 天蓝
+    Color(red: 0.62, green: 0.90, blue: 0.45), // 青柠
+    Color(red: 1.00, green: 0.78, blue: 0.35), // 琥珀
+    Color(red: 0.95, green: 0.55, blue: 0.85), // 品红
+    Color(red: 0.35, green: 0.90, blue: 0.90), // 青色
+    Color(red: 1.00, green: 0.62, blue: 0.30), // 橙色
+    Color(red: 0.68, green: 0.55, blue: 1.00), // 紫色
+    Color(red: 0.40, green: 0.85, blue: 0.55), // 绿色
+    Color(red: 1.00, green: 0.55, blue: 0.70), // 粉红
+    Color(red: 0.45, green: 0.60, blue: 1.00), // 蓝色
+    Color(red: 1.00, green: 0.88, blue: 0.35), // 黄色
+    Color(red: 0.30, green: 0.80, blue: 0.75), // 蓝绿
+    Color(red: 1.00, green: 0.50, blue: 0.45), // 红色
+    Color(red: 0.55, green: 0.55, blue: 1.00), // 靛蓝
+    Color(red: 0.55, green: 0.95, blue: 0.70), // 薄荷
+]
+
+/// 深色色盘（深色背景用，配白字，16 色）。
+private let darkPalette: [Color] = [
+    Color(red: 0.18, green: 0.29, blue: 0.48), // 深蓝
+    Color(red: 0.12, green: 0.40, blue: 0.40), // 深青
+    Color(red: 0.48, green: 0.16, blue: 0.24), // 酒红
+    Color(red: 0.16, green: 0.38, blue: 0.22), // 森绿
+    Color(red: 0.36, green: 0.20, blue: 0.44), // 深紫
+    Color(red: 0.52, green: 0.30, blue: 0.12), // 焦橙
+    Color(red: 0.30, green: 0.36, blue: 0.44), // 石板
+    Color(red: 0.44, green: 0.18, blue: 0.30), // 栗红
+    Color(red: 0.14, green: 0.24, blue: 0.52), // 藏青
+    Color(red: 0.34, green: 0.40, blue: 0.16), // 深橄榄
+    Color(red: 0.30, green: 0.16, blue: 0.52), // 深紫罗兰
+    Color(red: 0.40, green: 0.26, blue: 0.16), // 深棕
+    Color(red: 0.16, green: 0.34, blue: 0.52), // 钢蓝
+    Color(red: 0.48, green: 0.16, blue: 0.40), // 深品红
+    Color(red: 0.12, green: 0.44, blue: 0.30), // 深绿
+    Color(red: 0.22, green: 0.22, blue: 0.56), // 深靛
+]
+
+/// 按色盘主题取色盘（0 马卡龙 / 1 莫兰迪 / 2 高饱和 / 3 深色）。
+private func paletteColors(theme: Int) -> [Color] {
+    switch theme {
+    case 1: return morandiPalette
+    case 2: return vividPalette
+    case 3: return darkPalette
+    default: return coursePalette
+    }
+}
+
 /// 课程名稳定取色（和 Flutter courseColor 同一思路：名字哈希）。
-private func courseColor(for name: String) -> Color {
+private func courseColor(for name: String, theme: Int = 0) -> Color {
+    let palette = paletteColors(theme: theme)
     var hash = 0
     for scalar in name.unicodeScalars { hash = (hash &* 31) &+ Int(scalar.value) }
-    return coursePalette[(hash & 0x7fffffff) % coursePalette.count]
+    return palette[(hash & 0x7fffffff) % palette.count]
 }
 
 /// 把两个颜色按比例混合（取 RGB 平均，保留第一个颜色的透明度）。
@@ -510,6 +622,8 @@ struct ScheduleGrid: View {
     var allCourses: [Course] = []
     /// 当前页是第几周（只为“显示非本周课程”判断用）。
     var currentWeek: Int = 0
+    /// 真正的当前周（今日高亮/当前节次/已上完变淡只在当前周页生效）。
+    var actualCurrentWeek: Int = 0
     let school: SchoolConfig
     let rowHeight: CGFloat
     /// 课表外观（build 48）：文字颜色/字号/显示项/圆角/不透明度，按学校 + 学号保存。
@@ -587,16 +701,40 @@ struct ScheduleGrid: View {
         return result
     }
 
-    /// 块内文字颜色：叠加格子色时混 50%；非本周的课再按不透明比淡化。
-    private func textColor(for blockColor: Color, faded: Bool) -> Color {
+    /// 块内文字颜色：叠加格子色时混 50%；淡化时按不透明比乘。
+    private func textColor(for blockColor: Color, opacityFactor: Double) -> Color {
         var c = appearance.textColor
         if appearance.textOverlaysBlockColor {
             c = blendColors(c, with: blockColor, ratio: 0.5)
         }
-        if faded {
-            c = c.opacity(appearance.nonCurrentWeekOpacity)
+        if opacityFactor < 1 {
+            c = c.opacity(opacityFactor)
         }
         return c
+    }
+
+    /// 这一页是不是当前周页。
+    private var isCurrentPage: Bool { actualCurrentWeek > 0 && currentWeek == actualCurrentWeek }
+
+    /// 今天星期几（1=周一..7=周日）。
+    private var todayWeekday: Int {
+        let wd = Calendar(identifier: .gregorian).component(.weekday, from: Date())
+        return wd == 1 ? 7 : wd - 1
+    }
+
+    /// 现在是几点几分（换算成分钟）。
+    private var nowMinutes: Int {
+        let c = Calendar(identifier: .gregorian).dateComponents([.hour, .minute], from: Date())
+        return (c.hour ?? 0) * 60 + (c.minute ?? 0)
+    }
+
+    /// 某节次范围的开始/结束分钟数（取不到返回 nil）。
+    private func blockMinutes(start: Int, end: Int) -> (Int, Int)? {
+        guard school.effectiveStartTimeList.indices.contains(start - 1),
+              school.effectiveEndTimeList.indices.contains(end - 1) else { return nil }
+        let s = school.effectiveStartTimeList[start - 1]
+        let e = school.effectiveEndTimeList[end - 1]
+        return (s.0 * 60 + s.1, e.0 * 60 + e.1)
     }
 
     var body: some View {
@@ -612,34 +750,43 @@ struct ScheduleGrid: View {
                         path.move(to: CGPoint(x: 0, y: CGFloat(r) * rowHeight))
                         path.addLine(to: CGPoint(x: gridWidth, y: CGFloat(r) * rowHeight))
                     }
-                    .stroke(Color.black.opacity(0.15), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                    .stroke(appearance.headerColor.opacity(0.15), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
                 }
                 ForEach(0...visibleWeekdays.count, id: \.self) { c in
                     Path { path in
                         path.move(to: CGPoint(x: gutter + CGFloat(c) * columnWidth, y: 0))
                         path.addLine(to: CGPoint(x: gutter + CGFloat(c) * columnWidth, y: totalHeight))
                     }
-                    .stroke(Color.black.opacity(0.15), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+                    .stroke(appearance.headerColor.opacity(0.15), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
                 }
             }
             .opacity(appearance.showGridGuides ? 1 : 0)
+            // 今日列高亮（当前周页 + 今天在显示列里）：整列淡色底纹。
+            if appearance.highlightToday, isCurrentPage, visibleWeekdays.contains(todayWeekday) {
+                Rectangle()
+                    .fill(appearance.headerColor.opacity(0.07))
+                    .frame(width: columnWidth, height: totalHeight)
+                    .offset(x: gutter + CGFloat(columnIndex(for: todayWeekday)) * columnWidth, y: 0)
+            }
             // 左侧每节编号 + 开始时间 + 结束时间（Flutter _LeftGrid 同款）。
             // “节数栏显示时间”关了就只剩节次编号。
             ForEach(0..<school.sectionCount, id: \.self) { s in
                 VStack(spacing: 1) {
-                    Text("\(s + 1)")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(.black.opacity(0.85))
+                    if !appearance.hideSectionNumbers {
+                        Text("\(s + 1)")
+                            .font(.system(size: appearance.railFontSize + 4, weight: .bold))
+                            .foregroundStyle((appearance.railUsesHeaderColor ? appearance.headerColor : Color.black).opacity(0.85))
+                    }
                     if appearance.showSectionTime {
                         if school.effectiveStartTimeList.indices.contains(s) {
                             Text(timeText(school.effectiveStartTimeList[s]))
-                                .font(.system(size: 9))
-                                .foregroundStyle(.black.opacity(0.45))
+                                .font(.system(size: appearance.railFontSize))
+                                .foregroundStyle((appearance.railUsesHeaderColor ? appearance.headerColor : Color.black).opacity(0.45))
                         }
                         if school.effectiveEndTimeList.indices.contains(s) {
                             Text(timeText(school.effectiveEndTimeList[s]))
-                                .font(.system(size: 9))
-                                .foregroundStyle(.black.opacity(0.45))
+                                .font(.system(size: appearance.railFontSize))
+                                .foregroundStyle((appearance.railUsesHeaderColor ? appearance.headerColor : Color.black).opacity(0.45))
                         }
                     }
                 }
@@ -658,53 +805,61 @@ struct ScheduleGrid: View {
                     let tall = span >= 2
                     let atSign = appearance.showAtSign ? "@" : ""
                     // 块底色：按名字查固定色表（每门课一种色），不在表里退回名字哈希。
-                    let blockColor = colorMap[block.course.name] ?? courseColor(for: block.course.name)
+                    let blockColor = colorMap[block.course.name] ?? courseColor(for: block.course.name, theme: appearance.paletteTheme)
                     // 非本周的课：底色和文字都按不透明比淡化。
                     let faded = !block.isCurrentWeek
-                    let bgOpacity = appearance.blockOpacity * (faded ? appearance.nonCurrentWeekOpacity : 1)
-                    let text = textColor(for: blockColor, faded: faded)
-                    // 边框色：开“边框使用格子颜色”就用块色，否则用边框颜色。
-                    let border = appearance.borderUsesBlockColor ? blockColor : appearance.borderColor
+                    // 已上完的课（当前周页：今天之前的星期，或今天已下课的块）。
+                    let mins = blockMinutes(start: block.start, end: block.end)
+                    let isPast = appearance.dimPastCourses && isCurrentPage && block.isCurrentWeek
+                        && (weekday < todayWeekday || (weekday == todayWeekday && (mins.map { $0.1 <= nowMinutes } ?? false)))
+                    // 正在上的课（当前周页 + 今天 + 现在在上课时段内）。
+                    let isNow = appearance.markCurrentSection && isCurrentPage && block.isCurrentWeek
+                        && weekday == todayWeekday && (mins.map { $0.0 <= nowMinutes && nowMinutes < $0.1 } ?? false)
+                    let fadeFactor = (faded ? appearance.nonCurrentWeekOpacity : 1) * (isPast ? appearance.pastCourseOpacity : 1)
+                    let bgOpacity = appearance.blockOpacity * fadeFactor
+                    let text = textColor(for: blockColor, opacityFactor: fadeFactor)
+                    // 边框色：开“边框使用格子颜色”就用块色，否则用边框颜色；正在上的课红色加粗。
+                    let border = isNow ? Color.red : (appearance.borderUsesBlockColor ? blockColor : appearance.borderColor)
                     VStack(alignment: appearance.textHorizontalCenter ? .center : .leading, spacing: 2) {
                         if appearance.textVerticalCenter { Spacer() }
                         if appearance.showStartTime, school.effectiveStartTimeList.indices.contains(block.start - 1) {
                             Text(timeText(school.effectiveStartTimeList[block.start - 1]))
-                                .font(.system(size: 11, weight: .semibold))
+                                .font(.system(size: appearance.secondaryFontSize, weight: .semibold))
                                 .foregroundStyle(text)
                         }
                         Text(block.course.name)
-                            .font(.system(size: appearance.fontSize, weight: .bold))
+                            .font(.system(size: appearance.fontSize, weight: appearance.courseNameBold ? .bold : .regular))
                             .foregroundStyle(text)
                             .lineLimit(tall ? 4 : 2)
                             .multilineTextAlignment(appearance.textHorizontalCenter ? .center : .leading)
                         if tall && appearance.showTeacher {
                             Text(block.course.teacher)
-                                .font(.system(size: 11))
+                                .font(.system(size: appearance.secondaryFontSize))
                                 .foregroundStyle(text)
                                 .lineLimit(1)
                         }
                         if appearance.showLocation {
                             Text("\(atSign)\(block.course.location)")
-                                .font(.system(size: 11))
+                                .font(.system(size: appearance.secondaryFontSize))
                                 .foregroundStyle(text)
                                 .lineLimit(3)
                                 .multilineTextAlignment(appearance.textHorizontalCenter ? .center : .leading)
                         }
                         if tall && appearance.showExtra, !block.course.extra.isEmpty {
                             Text(block.course.extra)
-                                .font(.system(size: 10))
+                                .font(.system(size: max(appearance.secondaryFontSize - 1, 8)))
                                 .foregroundStyle(text)
                                 .lineLimit(2)
                                 .multilineTextAlignment(appearance.textHorizontalCenter ? .center : .leading)
                         }
                         if appearance.textVerticalCenter { Spacer() }
                     }
-                    .padding(.horizontal, appearance.textHorizontalCenter ? 0 : 4)
+                    .padding(.horizontal, appearance.blockPadding)
                     .frame(width: w, height: h, alignment: appearance.textVerticalCenter ? .center : .top)
                     .background(blockColor.opacity(bgOpacity), in: RoundedRectangle(cornerRadius: appearance.cornerRadius))
                     .overlay(
                         RoundedRectangle(cornerRadius: appearance.cornerRadius)
-                            .stroke(border, style: StrokeStyle(lineWidth: 1, dash: appearance.useDashedBorder ? [4, 4] : []))
+                            .stroke(border, style: StrokeStyle(lineWidth: isNow ? appearance.borderWidth + 1.5 : appearance.borderWidth, dash: appearance.useDashedBorder && !isNow ? [4, 4] : []))
                     )
                     .contentShape(RoundedRectangle(cornerRadius: appearance.cornerRadius))
                     .onTapGesture { onSelect?(block.start, block.end, block.course) }
@@ -733,7 +888,16 @@ struct CourseDetailPopup: View {
     /// 课表块的实际颜色（colorMap 分色），圆点和块同色；
     /// 别再用 courseColor(for:) 哈希取色，和块是两套算法对不上。
     let blockColor: Color
+    /// 这门课是否已设自定义颜色（设了才显示“恢复自动颜色”）。
+    var hasCustomColor: Bool = false
+    /// 改这门课的颜色：传 hex 设自定义色，传 nil 恢复色盘自动分色。
+    var onColorChange: ((String?) -> Void)? = nil
+    /// 深色配色时弹窗文字切白色。
+    var isDark: Bool = false
     let onDismiss: () -> Void
+
+    /// 弹窗主文字色（深色配色时白字）。
+    private var ink: Color { isDark ? .white : .black }
 
     /// 星期字（一..日）。
     private var weekdayText: String {
@@ -786,13 +950,13 @@ struct CourseDetailPopup: View {
                         .frame(width: 12, height: 12)
                     Text(course.name)
                         .font(.system(size: 20, weight: .bold))
-                        .foregroundStyle(.black)
+                        .foregroundStyle(ink)
                         .lineLimit(2)
                     Spacer()
                     Button { onDismiss() } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(.black.opacity(0.7))
+                            .foregroundStyle(ink.opacity(0.7))
                             .frame(width: 28, height: 28)
                     }
                     .glassEffect(.clear, in: Circle())
@@ -811,6 +975,29 @@ struct CourseDetailPopup: View {
                     if !course.extra.isEmpty {
                         detailRow(icon: "note.text", label: "备注", value: course.extra)
                     }
+                    // 这门课的颜色：选过就固定，不再随课程集合漂移。
+                    if let onColorChange {
+                        HStack(spacing: 12) {
+                            Image(systemName: "paintpalette.fill")
+                                .font(.system(size: 15))
+                                .foregroundStyle(ink.opacity(0.5))
+                                .frame(width: 20)
+                            Text("颜色")
+                                .font(.system(size: 15))
+                                .foregroundStyle(ink.opacity(0.5))
+                                .frame(width: 40, alignment: .leading)
+                            ColorPicker("", selection: Binding(
+                                get: { blockColor },
+                                set: { onColorChange($0.toHex()) }
+                            ), supportsOpacity: false)
+                            .labelsHidden()
+                            if hasCustomColor {
+                                Button("恢复自动颜色") { onColorChange(nil) }
+                                    .font(.system(size: 14))
+                            }
+                            Spacer()
+                        }
+                    }
                 }
                 .padding(.horizontal, 20)
                 .padding(.bottom, 20)
@@ -825,15 +1012,15 @@ struct CourseDetailPopup: View {
         HStack(spacing: 12) {
             Image(systemName: icon)
                 .font(.system(size: 15))
-                .foregroundStyle(.black.opacity(0.5))
+                .foregroundStyle(ink.opacity(0.5))
                 .frame(width: 20)
             Text(label)
                 .font(.system(size: 15))
-                .foregroundStyle(.black.opacity(0.5))
+                .foregroundStyle(ink.opacity(0.5))
                 .frame(width: 40, alignment: .leading)
             Text(value)
                 .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.black)
+                .foregroundStyle(ink)
                 .lineLimit(2)
             Spacer()
         }
@@ -1296,6 +1483,12 @@ struct ScheduleExportView: View {
 // 再调就覆盖保存。顶部是实时预览，改一项预览立刻变。
 struct ScheduleSettingsView: View {
     @Environment(AppState.self) private var appState
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// 预览用的生效外观（跟随系统深色时预览也切深色配色）。
+    private var previewAppearance: ScheduleAppearance {
+        appState.scheduleAppearance.resolved(darkMode: colorScheme == .dark)
+    }
 
     var body: some View {
         @Bindable var appState = appState
@@ -1303,14 +1496,31 @@ struct ScheduleSettingsView: View {
             // 实时预览
             Section {
                 HStack(spacing: 10) {
-                    previewBlock(name: "高等数学B", teacher: "宋江艳", location: "4504D", time: "08:40", color: coursePalette[3], appearance: appState.scheduleAppearance)
-                    previewBlock(name: "大学英语（一）", teacher: "李孟娜", location: "1203D", time: "08:40", color: coursePalette[0], appearance: appState.scheduleAppearance)
-                    previewBlock(name: "中国近现代史纲要", teacher: "黄泽楷", location: "6402D", time: "08:40", color: coursePalette[1], appearance: appState.scheduleAppearance)
+                    previewBlock(name: "高等数学B", teacher: "宋江艳", location: "4504D", time: "08:40", color: paletteColors(theme: previewAppearance.paletteTheme)[3], appearance: previewAppearance)
+                    previewBlock(name: "大学英语（一）", teacher: "李孟娜", location: "1203D", time: "08:40", color: paletteColors(theme: previewAppearance.paletteTheme)[0], appearance: previewAppearance)
+                    previewBlock(name: "中国近现代史纲要", teacher: "黄泽楷", location: "6402D", time: "08:40", color: paletteColors(theme: previewAppearance.paletteTheme)[1], appearance: previewAppearance)
                 }
                 .frame(maxWidth: .infinity, alignment: .center)
                 .padding(.vertical, 6)
             } header: {
                 Text("预览")
+            }
+
+            // 一键主题预设（只动颜色类字段，不动显示开关和自定义课色）
+            Section {
+                HStack(spacing: 8) {
+                    ForEach(ScheduleThemePreset.allCases, id: \.self) { preset in
+                        Button(preset.title) {
+                            var a = appState.scheduleAppearance
+                            a.applyPreset(preset)
+                            appState.scheduleAppearance = a
+                        }
+                        .buttonStyle(.bordered)
+                        .frame(maxWidth: .infinity)
+                    }
+                }
+            } header: {
+                Text("主题预设")
             }
 
             // 文字
@@ -1332,6 +1542,8 @@ struct ScheduleSettingsView: View {
                         .frame(width: 32, alignment: .trailing)
                 }
                 Stepper("字体大小：\(Int(appState.scheduleAppearance.fontSize))", value: $appState.scheduleAppearance.fontSize, in: 11...16, step: 1)
+                Stepper("副文字大小：\(Int(appState.scheduleAppearance.secondaryFontSize))", value: $appState.scheduleAppearance.secondaryFontSize, in: 9...14, step: 1)
+                Toggle("课名粗体", isOn: $appState.scheduleAppearance.courseNameBold)
                 Toggle("课程文字颜色叠加格子颜色", isOn: $appState.scheduleAppearance.textOverlaysBlockColor)
             } header: {
                 Text("文字")
@@ -1379,6 +1591,28 @@ struct ScheduleSettingsView: View {
                 .disabled(appState.scheduleAppearance.borderUsesBlockColor)
                 Toggle("格子使用虚线边框", isOn: $appState.scheduleAppearance.useDashedBorder)
                 Toggle("边框使用格子颜色", isOn: $appState.scheduleAppearance.borderUsesBlockColor)
+                HStack {
+                    Text("边框粗细")
+                    Slider(value: $appState.scheduleAppearance.borderWidth, in: 0.5...3, step: 0.5)
+                    Text(String(format: "%.1f", appState.scheduleAppearance.borderWidth))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 32, alignment: .trailing)
+                }
+                HStack {
+                    Text("格子内边距")
+                    Slider(value: $appState.scheduleAppearance.blockPadding, in: 0...10, step: 1)
+                    Text("\(Int(appState.scheduleAppearance.blockPadding))")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 32, alignment: .trailing)
+                }
+                Picker("色盘主题", selection: $appState.scheduleAppearance.paletteTheme) {
+                    Text("马卡龙").tag(0)
+                    Text("莫兰迪").tag(1)
+                    Text("高饱和").tag(2)
+                    Text("深色").tag(3)
+                }
                 Toggle("自定义格子高度", isOn: Binding(
                     get: { appState.scheduleAppearance.customRowHeight != nil },
                     set: { on in
@@ -1406,6 +1640,16 @@ struct ScheduleSettingsView: View {
                         .frame(width: 32, alignment: .trailing)
                 }
                 .disabled(!appState.scheduleAppearance.showNonCurrentWeekCourses)
+                Toggle("已上完的课变淡", isOn: $appState.scheduleAppearance.dimPastCourses)
+                HStack {
+                    Text("已上完课程不透明比")
+                    Slider(value: $appState.scheduleAppearance.pastCourseOpacity, in: 0.1...1.0, step: 0.05)
+                    Text("\(Int(appState.scheduleAppearance.pastCourseOpacity * 100))")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 32, alignment: .trailing)
+                }
+                .disabled(!appState.scheduleAppearance.dimPastCourses)
             } header: {
                 Text("格子外观")
             }
@@ -1432,8 +1676,24 @@ struct ScheduleSettingsView: View {
                 ))
                 Toggle("显示网格辅助线", isOn: $appState.scheduleAppearance.showGridGuides)
                 Toggle("节数栏显示时间", isOn: $appState.scheduleAppearance.showSectionTime)
+                Stepper("节次栏字号：\(Int(appState.scheduleAppearance.railFontSize))", value: $appState.scheduleAppearance.railFontSize, in: 8...12, step: 1)
+                Toggle("节次栏跟随表头颜色", isOn: $appState.scheduleAppearance.railUsesHeaderColor)
+                Toggle("隐藏节次数字", isOn: $appState.scheduleAppearance.hideSectionNumbers)
                 Toggle("显示周六", isOn: $appState.scheduleAppearance.showSaturday)
                 Toggle("显示周日", isOn: $appState.scheduleAppearance.showSunday)
+                Toggle("今日列高亮", isOn: $appState.scheduleAppearance.highlightToday)
+                Toggle("标记当前节次", isOn: $appState.scheduleAppearance.markCurrentSection)
+                Toggle("跟随系统深色模式", isOn: $appState.scheduleAppearance.followSystemDarkMode)
+                Toggle("课表背景图", isOn: $appState.scheduleAppearance.useBackgroundImage)
+                HStack {
+                    Text("背景图不透明度")
+                    Slider(value: $appState.scheduleAppearance.backgroundImageOpacity, in: 0.1...1.0, step: 0.05)
+                    Text("\(Int(appState.scheduleAppearance.backgroundImageOpacity * 100))")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 32, alignment: .trailing)
+                }
+                .disabled(!appState.scheduleAppearance.useBackgroundImage)
             } header: {
                 Text("整体界面")
             }
@@ -1467,35 +1727,35 @@ struct ScheduleSettingsView: View {
             if appearance.textVerticalCenter { Spacer() }
             if appearance.showStartTime {
                 Text(time)
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: appearance.secondaryFontSize, weight: .semibold))
                     .foregroundStyle(text)
             }
             Text(name)
-                .font(.system(size: appearance.fontSize, weight: .bold))
+                .font(.system(size: appearance.fontSize, weight: appearance.courseNameBold ? .bold : .regular))
                 .foregroundStyle(text)
                 .lineLimit(4)
                 .multilineTextAlignment(appearance.textHorizontalCenter ? .center : .leading)
             if appearance.showTeacher {
                 Text(teacher)
-                    .font(.system(size: 11))
+                    .font(.system(size: appearance.secondaryFontSize))
                     .foregroundStyle(text)
                     .lineLimit(1)
             }
             if appearance.showLocation {
                 Text("\(appearance.showAtSign ? "@" : "")\(location)")
-                    .font(.system(size: 11))
+                    .font(.system(size: appearance.secondaryFontSize))
                     .foregroundStyle(text)
                     .lineLimit(3)
                     .multilineTextAlignment(appearance.textHorizontalCenter ? .center : .leading)
             }
             if appearance.textVerticalCenter { Spacer() }
         }
-        .padding(.horizontal, appearance.textHorizontalCenter ? 0 : 4)
+        .padding(.horizontal, appearance.blockPadding)
         .frame(width: 92, height: 110)
         .background(color.opacity(appearance.blockOpacity), in: RoundedRectangle(cornerRadius: appearance.cornerRadius))
         .overlay(
             RoundedRectangle(cornerRadius: appearance.cornerRadius)
-                .stroke(border, style: StrokeStyle(lineWidth: 1, dash: appearance.useDashedBorder ? [4, 4] : []))
+                .stroke(border, style: StrokeStyle(lineWidth: appearance.borderWidth, dash: appearance.useDashedBorder ? [4, 4] : []))
         )
     }
 }

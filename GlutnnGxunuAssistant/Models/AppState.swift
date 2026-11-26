@@ -361,6 +361,20 @@ struct Toast: Identifiable, Equatable {
     static func == (lhs: Toast, rhs: Toast) -> Bool { lhs.id == rhs.id }
 }
 
+/// 课表一键主题预设（只动颜色类字段，见 ScheduleAppearance.applyPreset）。
+enum ScheduleThemePreset: CaseIterable {
+    case standard, eyeCare, dark, highContrast
+
+    var title: String {
+        switch self {
+        case .standard: return "默认"
+        case .eyeCare: return "护眼绿"
+        case .dark: return "深色"
+        case .highContrast: return "高对比"
+        }
+    }
+}
+
 // MARK: - 课表外观设置（build 48，参考 WakeUp「课表外观」）
 //
 // 按“学校 + 学号”永久保存（UserDefaults，JSON）：当前用户 + 当前学校
@@ -425,6 +439,40 @@ struct ScheduleAppearance: Codable, Equatable {
     /// 显示周日。默认 true。
     var showSunday: Bool
 
+    // MARK: 扩展外观（本次新增，默认值 = 之前的写死行为）
+    /// 副文字字号（开始时间/老师/地点，备注再小 1 号）。默认 11。
+    var secondaryFontSize: Double
+    /// 课名粗体。默认 true。
+    var courseNameBold: Bool
+    /// 格子边框粗细（0.5...3）。默认 1。
+    var borderWidth: Double
+    /// 格子内边距（水平，0...10）。默认 4。
+    var blockPadding: Double
+    /// 色盘主题：0 马卡龙 / 1 莫兰迪 / 2 高饱和 / 3 深色。默认 0。
+    var paletteTheme: Int
+    /// 每门课自定义颜色（课名 → hex），有就优先于色盘分色。默认空。
+    var courseColors: [String: String]
+    /// 节次栏时间字号（8...12，节次数字大 4 号）。默认 9。
+    var railFontSize: Double
+    /// 节次栏文字跟随表头颜色（否则黑色）。默认 false。
+    var railUsesHeaderColor: Bool
+    /// 隐藏节次数字（节次栏只显示时间）。默认 false。
+    var hideSectionNumbers: Bool
+    /// 今日列高亮（仅当前周页）。默认 false。
+    var highlightToday: Bool
+    /// 标记当前节次（正在上的课边框加粗变红）。默认 false。
+    var markCurrentSection: Bool
+    /// 已上完的课变淡（仅当前周页）。默认 false。
+    var dimPastCourses: Bool
+    /// 已上完课程不透明比。默认 0.5。
+    var pastCourseOpacity: Double
+    /// 课表页背景图（用自定义壁纸图，没存过用默认照片）。默认 false。
+    var useBackgroundImage: Bool
+    /// 背景图不透明度（0.1...1.0，越小越淡）。默认 0.35。
+    var backgroundImageOpacity: Double
+    /// 跟随系统深色模式（系统深色时课表页切深色配色）。默认 false。
+    var followSystemDarkMode: Bool
+
     static let `default` = ScheduleAppearance(
         textColorHex: "#000000",
         textOpacity: 0.75,
@@ -451,7 +499,23 @@ struct ScheduleAppearance: Codable, Equatable {
         showGridGuides: true,
         showSectionTime: true,
         showSaturday: true,
-        showSunday: true
+        showSunday: true,
+        secondaryFontSize: 11,
+        courseNameBold: true,
+        borderWidth: 1,
+        blockPadding: 4,
+        paletteTheme: 0,
+        courseColors: [:],
+        railFontSize: 9,
+        railUsesHeaderColor: false,
+        hideSectionNumbers: false,
+        highlightToday: false,
+        markCurrentSection: false,
+        dimPastCourses: false,
+        pastCourseOpacity: 0.5,
+        useBackgroundImage: false,
+        backgroundImageOpacity: 0.35,
+        followSystemDarkMode: false
     )
 
     /// 块内文字颜色（文字色 × 不透明度）。
@@ -467,6 +531,51 @@ struct ScheduleAppearance: Codable, Equatable {
     var headerColor: Color { Color(hex: headerColorHex) }
     /// 实际背景色（不用纯色背景时就是白底）。
     var effectiveBackgroundColor: Color { useSolidBackground ? backgroundColor : .white }
+
+    /// 系统深色且开了“跟随系统深色”时，返回深色配色版（其余设置不变）：
+    /// 背景/表头/边框切深色，节次栏跟随表头色；深色色盘下文字切白色
+    /// （马卡龙等浅色盘配黑字在深色背景上仍可读，不动文字色）。
+    func resolved(darkMode: Bool) -> ScheduleAppearance {
+        guard followSystemDarkMode, darkMode else { return self }
+        var a = self
+        a.useSolidBackground = true
+        a.backgroundColorHex = "#1C1C1E"
+        a.headerColorHex = "#FFFFFF"
+        a.borderColorHex = "#48484A"
+        a.railUsesHeaderColor = true
+        if a.paletteTheme == 3 {
+            a.textColorHex = "#FFFFFF"
+            a.textOpacity = 0.92
+        }
+        return a
+    }
+
+    /// 套用一键主题预设：只动颜色类字段，显示开关/对齐/行高/自定义课色不动。
+    mutating func applyPreset(_ preset: ScheduleThemePreset) {
+        switch preset {
+        case .standard:
+            textColorHex = "#000000"; textOpacity = 0.75
+            useSolidBackground = false; backgroundColorHex = "#FFFFFF"
+            headerColorHex = "#000000"; borderColorHex = "#D9D9D9"
+            borderWidth = 1; paletteTheme = 0; blockOpacity = 1.0
+        case .eyeCare:
+            textColorHex = "#1B3A24"; textOpacity = 0.85
+            useSolidBackground = true; backgroundColorHex = "#EAF4EA"
+            headerColorHex = "#1B3A24"; borderColorHex = "#B9D8BC"
+            borderWidth = 1; paletteTheme = 1; blockOpacity = 1.0
+        case .dark:
+            textColorHex = "#FFFFFF"; textOpacity = 0.92
+            useSolidBackground = true; backgroundColorHex = "#1C1C1E"
+            headerColorHex = "#FFFFFF"; borderColorHex = "#48484A"
+            borderWidth = 1; paletteTheme = 3; blockOpacity = 1.0
+            railUsesHeaderColor = true
+        case .highContrast:
+            textColorHex = "#000000"; textOpacity = 1.0
+            useSolidBackground = false; backgroundColorHex = "#FFFFFF"
+            headerColorHex = "#000000"; borderColorHex = "#000000"
+            borderWidth = 1.5; paletteTheme = 2; blockOpacity = 1.0
+        }
+    }
 
     /// 从 ColorPicker 的 Color 回写 hex（只取 RGB，不含透明度）。
     mutating func setTextColor(_ color: Color) {
@@ -498,6 +607,11 @@ extension ScheduleAppearance {
         case nonCurrentWeekOpacity, showNonCurrentWeekCourses
         case useSolidBackground, backgroundColorHex, headerColorHex
         case showGridGuides, showSectionTime, showSaturday, showSunday
+        case secondaryFontSize, courseNameBold, borderWidth, blockPadding
+        case paletteTheme, courseColors, railFontSize, railUsesHeaderColor
+        case hideSectionNumbers, highlightToday, markCurrentSection
+        case dimPastCourses, pastCourseOpacity
+        case useBackgroundImage, backgroundImageOpacity, followSystemDarkMode
     }
 
     init(from decoder: Decoder) throws {
@@ -529,6 +643,22 @@ extension ScheduleAppearance {
         showSectionTime = try c.decodeIfPresent(Bool.self, forKey: .showSectionTime) ?? d.showSectionTime
         showSaturday = try c.decodeIfPresent(Bool.self, forKey: .showSaturday) ?? d.showSaturday
         showSunday = try c.decodeIfPresent(Bool.self, forKey: .showSunday) ?? d.showSunday
+        secondaryFontSize = try c.decodeIfPresent(Double.self, forKey: .secondaryFontSize) ?? d.secondaryFontSize
+        courseNameBold = try c.decodeIfPresent(Bool.self, forKey: .courseNameBold) ?? d.courseNameBold
+        borderWidth = try c.decodeIfPresent(Double.self, forKey: .borderWidth) ?? d.borderWidth
+        blockPadding = try c.decodeIfPresent(Double.self, forKey: .blockPadding) ?? d.blockPadding
+        paletteTheme = try c.decodeIfPresent(Int.self, forKey: .paletteTheme) ?? d.paletteTheme
+        courseColors = try c.decodeIfPresent([String: String].self, forKey: .courseColors) ?? d.courseColors
+        railFontSize = try c.decodeIfPresent(Double.self, forKey: .railFontSize) ?? d.railFontSize
+        railUsesHeaderColor = try c.decodeIfPresent(Bool.self, forKey: .railUsesHeaderColor) ?? d.railUsesHeaderColor
+        hideSectionNumbers = try c.decodeIfPresent(Bool.self, forKey: .hideSectionNumbers) ?? d.hideSectionNumbers
+        highlightToday = try c.decodeIfPresent(Bool.self, forKey: .highlightToday) ?? d.highlightToday
+        markCurrentSection = try c.decodeIfPresent(Bool.self, forKey: .markCurrentSection) ?? d.markCurrentSection
+        dimPastCourses = try c.decodeIfPresent(Bool.self, forKey: .dimPastCourses) ?? d.dimPastCourses
+        pastCourseOpacity = try c.decodeIfPresent(Double.self, forKey: .pastCourseOpacity) ?? d.pastCourseOpacity
+        useBackgroundImage = try c.decodeIfPresent(Bool.self, forKey: .useBackgroundImage) ?? d.useBackgroundImage
+        backgroundImageOpacity = try c.decodeIfPresent(Double.self, forKey: .backgroundImageOpacity) ?? d.backgroundImageOpacity
+        followSystemDarkMode = try c.decodeIfPresent(Bool.self, forKey: .followSystemDarkMode) ?? d.followSystemDarkMode
     }
 }
 
